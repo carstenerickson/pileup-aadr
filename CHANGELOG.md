@@ -6,6 +6,52 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added (Day 5 — 2026-05-12)
+- `pileup_aadr/rejoin.py` — Stage 4 + no-lift fast-path finalizer.
+  Two entry points share a `RejoinOutput` bundle (Stage4 counters,
+  CoverageCounters, per-variant rows, sidecar dict):
+    - `rejoin_aadr_frame()` — walks pileupCaller's per-variant `.geno`
+      + `.snp` in lockstep, looks each rsID up in the AADR DataFrame,
+      reads the `SwappedAlleles` flag from Picard's lifted-VCF INFO via
+      pysam (`_build_swap_lookup`), applies `SWAP_DOSAGE` inversion
+      (0->2, 1->1, 2->0, 9->9; involutive) when the flag fires, and
+      streams the final EIGENSTRAT triplet to `<output_prefix>.{geno,
+      snp,ind}` in AADR's hg19 frame. Defensive sanity check: lifted
+      REF/ALT must match AADR REF/ALT modulo swap; mismatches drop with
+      WARNING + counter. Per-chrom call counters + autosomal coverage
+      gate computation alongside the main loop.
+    - `_no_lift_fast_path_finalize()` — for AADR-build == BAM-build,
+      pileupCaller's output IS the AADR-frame triplet. Copies `.geno`
+      + `.snp` byte-for-byte via `shutil.copy2`, walks them once for
+      counters, overrides `.ind` with user-supplied SEX (pileupCaller
+      always writes SEX=U). `Stage4RejoinCounters.ref_alt_swap_count`
+      and `allele_mismatch_drops` are 0 by definition.
+- Module-level constants `GENO_HOM_REF` (0), `GENO_HET` (1),
+  `GENO_HOM_ALT` (2), `GENO_MISSING` (9) — single ASCII chars matching
+  pileupCaller's `.geno` on-disk encoding directly (no int lookups,
+  no parse-and-reformat).
+- PSEUDOHAPLOID sidecar JSON construction (consumed by pgen-samplebind):
+  `pseudohaploid=1`, `het_count`, `non_missing_autosomal_count`,
+  `het_rate`, `calling_mode="randomDiploid"`, `note` differentiating
+  the lift vs no-lift paths.
+
+### Tests added (Day 5; 175 total now)
+- `test_rejoin.py` — 15 tests: SWAP_DOSAGE involutive correctness;
+  no-swap passthrough writes EIGENSTRAT triplet; output `.snp` carries
+  AADR's hg19 coords + Morgans (NOT pileupCaller's lifted hg38 coords);
+  `.ind` 3-col TSV with user `--sex`; SwappedAlleles inverts dosage
+  (0->2, 1->1, 2->0, 9->9 across all four geno chars in one run);
+  swap-flag-but-alleles-don't-swap defensive drop + WARNING; no-swap-
+  but-alleles-differ defensive drop + WARNING; rsID-in-pc-output-
+  missing-from-AADR skipped + WARNING; malformed pileupCaller `.snp`
+  row (!= 6 cols) → PileupAadrInternalError; coverage fraction =
+  autosomal_calls / autosomal_aadr (sex chroms in per-chrom but not
+  gated); `--report-tsv` per-variant rows populated with
+  passthrough/swap/missing_call action labels; sidecar pseudohaploid
+  classification with het_count + het_rate; no-lift fast-path triplet
+  copy; no-lift sidecar note mentions "no-lift"; no-lift overrides
+  pileupCaller's `.ind` with user SEX.
+
 ### Added (Day 4 — 2026-05-12)
 - `pileup_aadr/transform.py` — Stage 2: `build_pileupcaller_snp_and_bed`
   reads Picard's lifted VCF and emits two artifacts:
