@@ -1,0 +1,8 @@
+INFO	2026-04-15 14:25:01	LiftoverVcf	Loading up the target reference genome.
+INFO	2026-04-15 14:25:04	LiftoverVcf	Lifting variants over and sorting (not yet writing the output file.)
+INFO	2026-04-15 14:25:09	LiftoverVcf	Processed 5000 variants.
+INFO	2026-04-15 14:25:09	LiftoverVcf	2 variants failed to liftover.
+INFO	2026-04-15 14:25:09	LiftoverVcf	0 variants lifted over but had mismatching reference alleles after lift over.
+INFO	2026-04-15 14:25:09	LiftoverVcf	0.0400% of variants were not successfully lifted over.
+INFO	2026-04-15 14:25:09	LiftoverVcf	16 variants were lifted by swapping REF/ALT alleles.
+INFO	2026-04-15 14:25:09	LiftoverVcf	Writing out sorted records to final VCF.

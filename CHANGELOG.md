@@ -6,6 +6,55 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added (Day 3 — 2026-05-12)
+- `pileup_aadr/sites_vcf.py` — `build_sites_vcf` constructs a minimal
+  VCF v4.2 from the AADR DataFrame, the shape Picard's LiftoverVcf
+  expects (an EIGENSOFT `.snp` is not). Emits `##contig` lines
+  matching the source build (hg19 by default; hg38 branch present
+  for v0.2 forward-compat), `AADR_RS=<rsid>` INFO per row for
+  Stage-4 lookup, and `chrN` form (normalizes AADR's numeric
+  chrom). Palindrome filter (default-on) drops A/T + C/G ambiguous
+  SNPs (~8% of biallelic 1240k); non-SNP filter (default-on) drops
+  indels and non-ACGT alleles. Returns `Stage1InputFilters` counters.
+  Custom text writer ~3x faster than pysam.VariantFile at 1.2M
+  scale (verified at design time).
+- `pileup_aadr/lift.py` (Stage 1 added on top of Day 2's chain
+  resolution) — `lift_aadr_sites()` runs Picard LiftoverVcf via
+  `ToolWrapper` with `RECOVER_SWAPPED_REF_ALT=true` +
+  `WRITE_ORIGINAL_POSITION=true` + `WARN_ON_MISSING_CONTIG=true`
+  + `MAX_RECORDS_IN_RAM=100000`. JVM heap (`-Xmx<picard_mem>`,
+  default 3g) routed via H9-fixed `jvm_args` parameter (not
+  positional args). `parse_picard_stderr()` extracts 5 counters
+  via REQUIRED + OPTIONAL regex pattern split (M14 fix — `swapped`
+  is OPTIONAL, defaults 0 if Picard ever omits it). REQUIRED-pattern
+  miss → `PileupAadrInternalError` with reproducible "Picard format
+  changed" diagnostic. `parse_rejected_vcf()` categorizes by
+  FILTER (NoTarget / MismatchedRefAllele /
+  IndelStraddlesMultipleIntervals / SwappedAlleles / other);
+  empty path → all-zero (defensive). Yield gate: fail
+  (`LiftoverYieldError`) below 70% (default), warn (stderr WARN +
+  JSON flag) below 95% (default).
+
+### Tests added (Day 3; 142 total now)
+- `test_sites_vcf.py` — 13 tests: round-trip from Day-1 chr22
+  fixture (50 sites, 1 palindrome → 49 written), VCF v4.2 header
+  correctness (##contig length matches HG19_CHROM_LENGTHS, AADR_RS
+  INFO present, 8-col CHROM line), chrN normalization,
+  palindrome filter on/off, non-SNP filter (indels + N + IUPAC
+  codes), unrecognized-chrom DEBUG-skip path, sort order
+  (CHROM_ORDER then pos), aadr_build switch (hg19 vs hg38
+  ##contig table), empty-input header-only path.
+- `test_lift_stage1.py` — 9 tests: parse_picard_stderr against
+  captured Picard 3.3.0 fixtures from v2.1 verification (clean
+  100-site run + partial-yield 5000-site run), optional-swap
+  default, missing-required-pattern raises; parse_rejected_vcf
+  empty + categorization paths; lift_aadr_sites mocked-Picard
+  integration covering clean run (100% yield), low-yield raise
+  (50% < 70% gate), warn-only path (80% < 95% warn but ≥ 70% fail).
+- `tests/fixtures/stderr/picard_clean.stderr` and
+  `picard_partial_yield.stderr` — captured-from-v2.1 Picard 3.3.0
+  output for stderr-parser unit tests.
+
 ### Added (Day 1 — 2026-05-12)
 - Initial repository scaffold per LLD §2 (repo skeleton)
 - `pyproject.toml` with build-system + dependencies + dev extras + ruff/mypy/pytest config
