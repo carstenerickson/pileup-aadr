@@ -6,6 +6,42 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-05-12
+
+Two real bug fixes from the pipeline customer.
+
+### Fixed
+- **#1 — `detect_bam_build` misclassified hg38 BAMs as hg19.** hg19 chr1
+  (249,250,621) and hg38 chr1 (248,956,422) are only 294 KB apart — well
+  INSIDE the ±1 Mb tolerance window. The first-match-wins logic always
+  returned `"hg19"` for hg38 BAMs because the hg19 check fired first
+  within tolerance. Switched to closest-match (same fix already applied
+  to `detect_aadr_build` + `verify_fasta_matches_bam_build`; this was a
+  regression of the same bug class). Workaround pre-fix: pass
+  `--bam-build hg38` explicitly.
+- **#2 — `samtools mpileup -@` is invalid.** `mpileup` is single-threaded
+  and has no `-@`/`--threads` flag in any release through 1.23.1
+  (verified: `samtools view`'s `--threads` is a separate codepath).
+  v0.1.0-0.1.1 erroneously appended `-@ N` for `--threads > 1`
+  invocations, causing samtools to error ~22s into Stage 3. The
+  `--threads` CLI flag is preserved for back-compat but now treated as a
+  no-op; pileupCaller is also single-threaded (Haskell) so Stage 3 is
+  always single-threaded by tool nature. A WARN log fires when
+  `--threads > 1` to make the no-op visible. The `--no-thread-cap` flag
+  is similarly preserved as a no-op. Workaround pre-fix: pass
+  `--threads 1`.
+
+### Tests added
+- `test_format_detect.test_detect_bam_build_hg38_not_misclassified_as_hg19`
+  is the #1 regression test (asserts the closest-match logic returns
+  `"hg38"` for chr1=248_956_422), plus 3 sibling tests covering hg19
+  detection, override short-circuit, and unknown-assembly raises.
+- `test_pileup_call.test_samtools_args_never_include_dash_at` is the #2
+  regression test (asserts the constructed mpileup argv never contains
+  `-@` for any `--threads` value: 1, 4, 16). Plus
+  `test_threads_gt_1_warns_no_op` and `test_threads_eq_1_silent` cover
+  the new WARN behavior.
+
 ## [0.1.1] — 2026-05-12
 
 HLD/LLD reconciliation pass: closes the four functional gaps surfaced in

@@ -22,9 +22,14 @@ from .tool_wrapper import PILEUPCALLER_SPEC, SAMTOOLS_SPEC, ToolWrapper
 
 log = logging.getLogger(__name__)
 
-# mpileup is BAM-seek-bound on large BAMs; >4 threads gives diminishing returns
-# (verified empirically v2.1 — wallclock plateau at threads=4 for 67 GB BAM).
-_THREAD_CAP: Final[int] = 4
+# `samtools mpileup` is single-threaded — it has no `-@`/`--threads` flag in
+# any release through 1.23.1. v0.1.0-0.1.1 erroneously appended `-@ N` for
+# `--threads > 1` invocations, causing samtools to error ~22s into Stage 3
+# (issue #2). The `--threads` CLI flag is preserved for back-compat but now
+# treated as a no-op on the mpileup side; pileupCaller is also single-threaded
+# (Haskell, no parallelism), so Stage 3 is always single-threaded by tool nature.
+# A WARN log fires when --threads > 1 to make the no-op visible.
+_THREADS_NOOP_WARN_THRESHOLD: Final[int] = 1
 
 # pileupCaller 1.6.0.0 stderr summary block (verified empirically v2.1).
 # Format:
@@ -92,15 +97,17 @@ def run_pileup_call(
             tolerated SIGPIPE on samtools when pileupCaller succeeded).
         PileupAadrInternalError: pileupCaller stderr unparseable (format change).
     """
-    effective_threads = threads if no_thread_cap else min(threads, _THREAD_CAP)
-    if effective_threads != threads:
-        log.info(
-            "Capping mpileup threads %d -> %d (mpileup is BAM-seek-bound on large "
-            "BAMs; pass --no-thread-cap to override)",
-            threads, effective_threads,
+    if threads > _THREADS_NOOP_WARN_THRESHOLD:
+        log.warning(
+            "--threads=%d ignored: samtools mpileup is single-threaded (no -@ "
+            "flag) and pileupCaller is single-threaded (Haskell). Stage 3 is "
+            "single-threaded by tool nature. Pass --threads=1 to silence this. "
+            "(--no-thread-cap is also a no-op.)",
+            threads,
         )
+    _ = no_thread_cap  # explicitly retained for back-compat; no behavioral effect
 
-    # samtools mpileup args
+    # samtools mpileup args. NO `-@` here — see _THREADS_NOOP_WARN_THRESHOLD note.
     samtools_args = ["mpileup"]
     if not no_baq:
         samtools_args.append("-B")
@@ -111,8 +118,6 @@ def run_pileup_call(
         "-f", str(target_fasta_path),
         "-l", str(bed_path),
     ])
-    if effective_threads > 1:
-        samtools_args.extend(["-@", str(effective_threads)])
     samtools_args.append(str(bam_path))
 
     # pileupCaller args

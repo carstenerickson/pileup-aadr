@@ -131,10 +131,20 @@ def detect_bam_build(
             )
         chr1_length = int(chr1_record["LN"])
 
-    if abs(chr1_length - HG19_CHR1_LENGTH) <= _BUILD_TOLERANCE_BP:
-        return "hg19"
-    if abs(chr1_length - HG38_CHR1_LENGTH) <= _BUILD_TOLERANCE_BP:
-        return "hg38"
+    # Closest-match: hg19 chr1 (249,250,621) and hg38 chr1 (248,956,422) are
+    # only 294 KB apart — well INSIDE the ±1 Mb tolerance window. The previous
+    # first-match-wins logic always returned "hg19" for hg38 BAMs because the
+    # hg19 branch fired first within tolerance. Pick the closer build, then
+    # verify the closer match also fits the patch-level tolerance window.
+    # Mirrors the same fix already applied to detect_aadr_build (issue #1
+    # was a regression of this same bug class in detect_bam_build).
+    distances = {
+        "hg19": abs(chr1_length - HG19_CHR1_LENGTH),
+        "hg38": abs(chr1_length - HG38_CHR1_LENGTH),
+    }
+    closest_build, closest_dist = min(distances.items(), key=lambda kv: kv[1])
+    if closest_dist <= _BUILD_TOLERANCE_BP:
+        return closest_build  # type: ignore[return-value]
     raise UnsupportedReferenceBuild(
         what=str(bam_path),
         why=(

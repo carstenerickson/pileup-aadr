@@ -9,9 +9,11 @@ from pileup_aadr.errors import (
     AADRDuplicateRsidError,
     AADRParseError,
     UnsupportedAADRBuild,
+    UnsupportedReferenceBuild,
 )
 from pileup_aadr.format_detect import (
     detect_aadr_build,
+    detect_bam_build,
     normalize_chrom,
     parse_aadr_snp,
 )
@@ -161,3 +163,51 @@ def test_detect_aadr_build_hg38(tmp_path: Path) -> None:
     snp.write_text("rs1 1 0.0 248900000 A G\n")  # 56,422 from hg38; 350,621 from hg19
     df = parse_aadr_snp(snp)
     assert detect_aadr_build(df, override="auto") == "hg38"
+
+
+# --- detect_bam_build (issue #1 regression) ---
+
+
+def _make_bam_with_chr1_length(path: Path, chr1_length: int) -> Path:
+    """Write a header-only BAM with a configurable chr1 @SQ length."""
+    import pysam
+    header = {
+        "HD": {"VN": "1.6"},
+        "SQ": [
+            {"SN": "chr1", "LN": chr1_length},
+            {"SN": "chr22", "LN": 51_304_566},
+        ],
+    }
+    with pysam.AlignmentFile(str(path), "wb", header=header):
+        pass
+    return path
+
+
+def test_detect_bam_build_hg38_not_misclassified_as_hg19(tmp_path: Path) -> None:
+    """Issue #1 regression: hg38 chr1 (248,956,422) is only 294 KB shorter than
+    hg19 (249,250,621) — well INSIDE the ±1 Mb tolerance window. The pre-fix
+    first-match-wins logic always returned 'hg19' for hg38 BAMs because the
+    hg19 check fired first within tolerance. Closest-match must pick hg38.
+    """
+    bam = _make_bam_with_chr1_length(tmp_path / "hg38.bam", 248_956_422)
+    assert detect_bam_build(bam, override="auto") == "hg38"
+
+
+def test_detect_bam_build_hg19(tmp_path: Path) -> None:
+    """Sanity: hg19 chr1 (249,250,621) detects as hg19."""
+    bam = _make_bam_with_chr1_length(tmp_path / "hg19.bam", 249_250_621)
+    assert detect_bam_build(bam, override="auto") == "hg19"
+
+
+def test_detect_bam_build_override_short_circuits(tmp_path: Path) -> None:
+    """Explicit override returns immediately without consulting @SQ."""
+    bam = _make_bam_with_chr1_length(tmp_path / "any.bam", 248_956_422)
+    assert detect_bam_build(bam, override="hg19") == "hg19"
+    assert detect_bam_build(bam, override="hg38") == "hg38"
+
+
+def test_detect_bam_build_unknown_assembly_raises(tmp_path: Path) -> None:
+    """T2T-CHM13 chr1 (248_387_328) is >500 KB from hg38 — outside tolerance."""
+    bam = _make_bam_with_chr1_length(tmp_path / "t2t.bam", 200_000_000)
+    with pytest.raises(UnsupportedReferenceBuild, match=r"neither hg19 .*nor hg38"):
+        detect_bam_build(bam, override="auto")

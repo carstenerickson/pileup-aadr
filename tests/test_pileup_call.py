@@ -218,12 +218,13 @@ def test_upstream_real_error_raises(
     assert "missing BAM index" in excinfo.value.why
 
 
-def test_thread_cap_applied_by_default(
+def test_threads_gt_1_warns_no_op(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """threads=8 with cap → effective_threads becomes 4 (logged at INFO)."""
+    """Issue #2 regression: --threads > 1 logs a WARN that the flag is a no-op
+    (samtools mpileup is single-threaded — no `-@` flag in any release)."""
     import logging
     _setup_run_mocks(
         monkeypatch, tmp_path,
@@ -232,17 +233,17 @@ def test_thread_cap_applied_by_default(
             FIXTURES_STDERR / "pileupcaller_clean.stderr"
         ).read_text(),
     )
-    caplog.set_level(logging.INFO, logger="pileup_aadr.pileup_call")
+    caplog.set_level(logging.WARNING, logger="pileup_aadr.pileup_call")
     run_pileup_call(threads=8, **_common_run_args(tmp_path))
-    assert any("Capping mpileup threads 8 -> 4" in r.message for r in caplog.records)
+    assert any("--threads=8 ignored" in r.message for r in caplog.records)
 
 
-def test_no_thread_cap_skips_capping(
+def test_threads_eq_1_silent(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """threads=8 with no_thread_cap=True → no cap log emitted."""
+    """--threads=1 (the default) is silent — no spurious WARN log."""
     import logging
     _setup_run_mocks(
         monkeypatch, tmp_path,
@@ -251,6 +252,51 @@ def test_no_thread_cap_skips_capping(
             FIXTURES_STDERR / "pileupcaller_clean.stderr"
         ).read_text(),
     )
-    caplog.set_level(logging.INFO, logger="pileup_aadr.pileup_call")
-    run_pileup_call(threads=8, no_thread_cap=True, **_common_run_args(tmp_path))
-    assert not any("Capping mpileup threads" in r.message for r in caplog.records)
+    caplog.set_level(logging.WARNING, logger="pileup_aadr.pileup_call")
+    run_pileup_call(threads=1, **_common_run_args(tmp_path))
+    assert not any("ignored" in r.message for r in caplog.records)
+
+
+def test_samtools_args_never_include_dash_at(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Issue #2 regression: the constructed `samtools mpileup` argv MUST NOT
+    contain `-@` regardless of --threads value (mpileup rejects it)."""
+    captured: dict[str, list[str]] = {}
+
+    def capture_pipe(
+        self: object,
+        downstream: object,
+        *,
+        upstream_args: list[str],
+        downstream_args: list[str],
+        upstream_stderr_to: Path,
+        downstream_stderr_to: Path,
+    ) -> tuple[ToolRunResult, ToolRunResult]:
+        captured["upstream_args"] = upstream_args
+        upstream_stderr_to.parent.mkdir(parents=True, exist_ok=True)
+        upstream_stderr_to.write_text("")
+        downstream_stderr_to.write_text(
+            (FIXTURES_STDERR / "pileupcaller_clean.stderr").read_text(),
+        )
+        return (
+            ToolRunResult(exit_code=0, stdout=None, stderr_path=upstream_stderr_to,
+                          stderr_text=None, wallclock_seconds=0.1, peak_rss_mb=None),
+            ToolRunResult(exit_code=0, stdout=None, stderr_path=downstream_stderr_to,
+                          stderr_text=None, wallclock_seconds=0.1, peak_rss_mb=None),
+        )
+
+    from pileup_aadr import pileup_call
+    monkeypatch.setattr(
+        pileup_call.ToolWrapper, "_resolve_binary",
+        lambda _self, spec: Path(f"/usr/bin/fake_{spec.binary}"),
+    )
+    monkeypatch.setattr(pileup_call.ToolWrapper, "_check_version", lambda _self: None)
+    monkeypatch.setattr(pileup_call.ToolWrapper, "pipe", capture_pipe)
+
+    for n in (1, 4, 16):
+        run_pileup_call(threads=n, **_common_run_args(tmp_path))
+        assert "-@" not in captured["upstream_args"], (
+            f"--threads={n} produced -@: {captured['upstream_args']}"
+        )
