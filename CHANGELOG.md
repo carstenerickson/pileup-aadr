@@ -7,6 +7,27 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added (v0.2 in progress)
+- **Panel classification + non-autosomal coverage-gate skip** (HLD §"Out-of-
+  scope reachable extensions": HO panel + chrY-only + chrM-only + custom
+  panels). New `format_detect.classify_aadr_chrom_set(df) -> str` tags the
+  panel as one of `autosomes+sex` / `autosomes_only` / `sex_only` /
+  `chrY_only` / `chrM_only` / `custom`. The orchestrator uses this in
+  `_evaluate_coverage_gate` to skip the autosomal threshold cleanly with
+  an INFO log when the panel is non-autosomal — chrY haplogroup and
+  chrM mtDNA workflows no longer fail with a misleading "below
+  --min-coverage 500000" message. Per-chrom counts still flow into
+  `coverage.per_chrom_call_count` for downstream sanity. `inspect` adds
+  `chrom_set` to its summary fields. README documents the panel classes
+  and their gate semantics. 7 new tests (6 classifier + 1 orchestrator
+  gate-skip end-to-end against a chrY-only synthetic panel).
+
+  Practical effect: the tool was already panel-agnostic by construction
+  (any EIGENSTRAT `.snp` reads cleanly), but the autosomal coverage gate
+  was a 1240k-specific assumption baked into the orchestrator. Removing
+  that assumption opens HumanOrigins (~600K sites; user picks own
+  threshold), chrY-only haplogroup workflows, chrM-only mtDNA workflows,
+  and arbitrary custom panels (with documentation).
+
 - **chr20-as-anchor fallback for build detection** (customer issue #1
   follow-up suggestion). When chr1 is absent from the BAM `@SQ` headers
   or AADR `.snp` (e.g., chrY-only haplogroup workflows or a chr-by-chr

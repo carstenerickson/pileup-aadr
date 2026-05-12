@@ -22,6 +22,7 @@ def test_inspect_tsv_output(aadr_chr22_slice: Path) -> None:
         "duplicate_rsid_count",
         "build",
         "chrom_distribution",
+        "chrom_set",
         "allele_distribution",
         "palindrome_count",
         "palindrome_fraction",
@@ -49,6 +50,8 @@ def test_inspect_json_output(aadr_chr22_slice: Path) -> None:
     assert data["non_snp_count"] == 0
     # All gen_morgans values in the slice are 0.0, so morgans_present is False
     assert data["morgans_present"] is False
+    # chr22 only → not autosomes_only (which requires all 22), not chrY/chrM only → custom
+    assert data["chrom_set"] == "custom"
 
 
 def test_inspect_palindrome_count(tmp_path: Path) -> None:

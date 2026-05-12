@@ -130,7 +130,10 @@ def run_extract(args: ExtractCliArgs) -> int:
                 td_lift=lift_dir, td_transform=transform_dir, td_call=call_dir,
             )
 
-        _evaluate_coverage_gate(counters, args)
+        _evaluate_coverage_gate(
+            counters, args,
+            panel_class=format_detect.classify_aadr_chrom_set(aadr_df),
+        )
         counters = _finalize_counters(counters, time.perf_counter() - t_start)
 
         _write_outputs(
@@ -279,9 +282,38 @@ def _run_stages(
     return counters, rejoin_out
 
 
-def _evaluate_coverage_gate(counters: ExtractCounters, args: ExtractCliArgs) -> None:
-    """Apply min/warn coverage thresholds. Raises CoverageGateFailure on min violation."""
+_NON_AUTOSOMAL_PANELS: frozenset[str] = frozenset({
+    "chrY_only", "chrM_only", "sex_only",
+})
+
+
+def _evaluate_coverage_gate(
+    counters: ExtractCounters,
+    args: ExtractCliArgs,
+    *,
+    panel_class: str,
+) -> None:
+    """Apply min/warn coverage thresholds. Raises CoverageGateFailure on min violation.
+
+    The autosomal coverage gate is the canonical 1240k-style check, but the
+    threshold is meaningless for chrY-only / chrM-only / sex-chrom-only panels
+    (haplogroup, mtDNA, sex-chrom-specific workflows; v0.2 enhancement). For
+    those panel classes, set `gates["coverage"] = "N/A"` and skip the gate
+    cleanly with an INFO log naming the detected class. The user still sees
+    `coverage.per_chrom_call_count` in the JSON report so they can apply
+    their own panel-appropriate sanity checks.
+    """
     cov = counters.coverage
+    if panel_class in _NON_AUTOSOMAL_PANELS:
+        log.info(
+            "Skipping autosomal coverage gate: AADR panel is %r (no autosomes; "
+            "--min-coverage threshold doesn't apply). Per-chrom call counts "
+            "available in coverage.per_chrom_call_count for downstream sanity.",
+            panel_class,
+        )
+        counters.gates["coverage"] = "N/A"
+        return
+
     n = cov.non_missing_autosomal_calls
     if n < args.min_coverage:
         raise CoverageGateFailure(

@@ -275,3 +275,58 @@ def test_detect_aadr_build_no_chr1_no_chr20_raises(tmp_path: Path) -> None:
     df = parse_aadr_snp(snp)
     with pytest.raises(UnsupportedAADRBuild, match=r"chr1.*OR chr20"):
         detect_aadr_build(df, override="auto")
+
+
+# --- classify_aadr_chrom_set (v0.2 panel-class enhancement) ---
+
+
+def _aadr_df_from_chroms(tmp_path: Path, chrom_ints: list[str]) -> pd.DataFrame:  # noqa: F821
+    """Build a tiny AADR DataFrame with one row per requested chrom_int."""
+    snp = tmp_path / "tmp.snp"
+    snp.write_text("\n".join(
+        f"rs{i} {c} 0.0 {1000 * (i + 1)} A G" for i, c in enumerate(chrom_ints)
+    ) + "\n")
+    return parse_aadr_snp(snp)
+
+
+def test_classify_full_panel_is_autosomes_plus_sex(tmp_path: Path) -> None:
+    """A panel with chr1-22 + chr X + Y (typical 1240k / HO shape)."""
+    from pileup_aadr.format_detect import classify_aadr_chrom_set
+    chroms = [str(i) for i in range(1, 23)] + ["23", "24"]
+    df = _aadr_df_from_chroms(tmp_path, chroms)
+    assert classify_aadr_chrom_set(df) == "autosomes+sex"
+
+
+def test_classify_autosomes_only(tmp_path: Path) -> None:
+    """A 1240k autosomes-only subset: all 22 autosomes, no sex/MT."""
+    from pileup_aadr.format_detect import classify_aadr_chrom_set
+    df = _aadr_df_from_chroms(tmp_path, [str(i) for i in range(1, 23)])
+    assert classify_aadr_chrom_set(df) == "autosomes_only"
+
+
+def test_classify_chry_only(tmp_path: Path) -> None:
+    """chrY-only AADR slice (haplogroup workflows)."""
+    from pileup_aadr.format_detect import classify_aadr_chrom_set
+    df = _aadr_df_from_chroms(tmp_path, ["24"])
+    assert classify_aadr_chrom_set(df) == "chrY_only"
+
+
+def test_classify_chrm_only(tmp_path: Path) -> None:
+    """chrM-only AADR slice (mtDNA workflows)."""
+    from pileup_aadr.format_detect import classify_aadr_chrom_set
+    df = _aadr_df_from_chroms(tmp_path, ["90"])
+    assert classify_aadr_chrom_set(df) == "chrM_only"
+
+
+def test_classify_sex_only(tmp_path: Path) -> None:
+    """chrX + chrY only (sex-chromosome-specific panel)."""
+    from pileup_aadr.format_detect import classify_aadr_chrom_set
+    df = _aadr_df_from_chroms(tmp_path, ["23", "24"])
+    assert classify_aadr_chrom_set(df) == "sex_only"
+
+
+def test_classify_chr22_only_is_custom(tmp_path: Path) -> None:
+    """Single-autosome slice (the existing chr22 test fixture shape) is `custom`."""
+    from pileup_aadr.format_detect import classify_aadr_chrom_set
+    df = _aadr_df_from_chroms(tmp_path, ["22"])
+    assert classify_aadr_chrom_set(df) == "custom"

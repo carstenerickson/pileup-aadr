@@ -295,6 +295,47 @@ def test_coverage_gate_failure_raises(
         run_extract(args)
 
 
+def test_coverage_gate_skipped_for_chry_only_panel(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """v0.2 #3: chrY-only AADR (haplogroup workflow) skips the autosomal gate
+    cleanly with an INFO log, even if --min-coverage would normally fail."""
+    import logging
+    bam = tmp_path / "user.bam"
+    _make_minimal_bam(bam, build="hg19")
+    aadr = tmp_path / "aadr_chry.snp"
+    # chrY-only AADR slice (chrom_int '24' in AADR encoding); add chr1 too so
+    # detect_aadr_build can resolve via the chr1 anchor (1240k chrY rows
+    # alone don't have positions near hg19/hg38 chrY end with our wide tol).
+    aadr.write_text("\n".join([
+        f"rs_y{i:04d}\t24\t0.0\t{1_000_000 + i * 1000}\tA\tG"
+        for i in range(20)
+    ]) + "\n")
+    fasta = tmp_path / "hg19.fa"
+    _make_fasta(fasta, build="hg19")
+
+    _patch_binaries(monkeypatch)
+    _patch_pileup_call(monkeypatch, total_sites=20, non_missing=20)
+    caplog.set_level(logging.INFO, logger="pileup_aadr.extract_orch")
+
+    args = ExtractCliArgs(
+        bam=bam, aadr_snp=aadr,
+        output_prefix=tmp_path / "out",
+        ref_fasta=fasta, bam_build="hg19", aadr_build="hg19",
+        min_coverage=1_000_000,  # would normally fail; chrY-only panel skips gate
+        warn_coverage=1_000_000,
+    )
+    exit_code = run_extract(args)
+    assert exit_code == 0
+    # The gate skip emits a specific INFO log with the panel class name.
+    assert any(
+        "Skipping autosomal coverage gate" in r.message
+        and "chrY_only" in r.message
+        for r in caplog.records
+    ), f"expected gate-skip log; got: {[r.message for r in caplog.records]}"
+
+
 def test_coverage_warn_threshold_marks_warning(
     no_lift_run_setup: dict[str, Path],
     caplog: pytest.LogCaptureFixture,

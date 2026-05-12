@@ -14,7 +14,11 @@ from pathlib import Path
 from typing import Any, Final
 
 from .errors import PileupAadrError
-from .format_detect import detect_aadr_build, parse_aadr_snp
+from .format_detect import (
+    classify_aadr_chrom_set,
+    detect_aadr_build,
+    parse_aadr_snp,
+)
 
 log = logging.getLogger(__name__)
 
@@ -35,11 +39,15 @@ def run_inspect(*, aadr_snp: Path, json_output: bool) -> int:
     Returns:
         0 on success; non-zero exit codes propagate via PileupAadrError raised by the parser.
 
-    Fields (per LLD §16):
+    Fields:
         total_rows            int
         duplicate_rsid_count  int (always 0 — parse_aadr_snp raises on duplicates)
         build                 "hg19" | "hg38" | "unknown"
         chrom_distribution    dict[chrom_str, count]
+        chrom_set             "autosomes+sex" | "autosomes_only" | "sex_only" |
+                              "chrY_only" | "chrM_only" | "custom"
+                              (drives whether `extract`'s autosomal coverage
+                              gate applies; non-autosomal panels skip it)
         allele_distribution   dict[ref_alt_pair, count]   (e.g., "A>G": 287012)
         palindrome_count      int
         palindrome_fraction   float
@@ -76,6 +84,7 @@ def run_inspect(*, aadr_snp: Path, json_output: bool) -> int:
         "duplicate_rsid_count": 0,  # parse_aadr_snp would have raised
         "build": build,
         "chrom_distribution": {str(k): int(v) for k, v in chrom_distribution.items()},
+        "chrom_set": classify_aadr_chrom_set(df),
         "allele_distribution": allele_distribution,
         "palindrome_count": int(palindrome_count),
         "palindrome_fraction": round(palindrome_count / n_rows, 4) if n_rows else 0.0,

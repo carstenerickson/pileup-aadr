@@ -108,6 +108,41 @@ Run `pileup-aadr <cmd> --help` for the full option list. Notable `extract` optio
 - **Reporting**: `--report-json`, `--report-tsv`
 - **Tempdir**: `--tempdir`, `--keep-tempdir`, `--clean-tempdir-on-crash`
 
+## Panels: 1240k, HO, chrY/chrM, custom
+
+`pileup-aadr` is panel-agnostic — any EIGENSTRAT `.snp` works. The
+`--aadr-snp` argument is just a positional path. `pileup-aadr inspect`
+reports a `chrom_set` field that classifies the panel and (for `extract`)
+drives whether the autosomal coverage gate applies:
+
+| `chrom_set`      | Typical panel                              | `extract` coverage gate |
+|------------------|--------------------------------------------|--------------------------|
+| `autosomes+sex`  | AADR v66 1240k, AADR v66 HO                | applies (gate on autosomal calls) |
+| `autosomes_only` | 1240k autosomes-only subset                | applies |
+| `chrY_only`      | chrY haplogroup workflows                  | **skipped** with INFO log; per-chrom counts in JSON report for downstream sanity |
+| `chrM_only`      | mtDNA-only ancient workflows               | **skipped**, same |
+| `sex_only`       | chrX + chrY only                           | **skipped**, same |
+| `custom`         | one-chrom slices, novel panels             | applies (autosomal threshold; user overrides via `--min-coverage` if needed) |
+
+Tested against AADR v66 1240k (~1.2M sites). HO (~600K sites) shares the
+format and works identically; the user is responsible for choosing a
+panel-appropriate `--min-coverage` (the 500k default is calibrated for
+1240k). For custom panels, run `pileup-aadr inspect <panel.snp>` first
+to confirm the `chrom_set` and panel size before pinning thresholds.
+
+For a chrY-only haplogroup workflow:
+
+```bash
+# AADR slice with only chr24 (chrY in EIGENSTRAT encoding) rows.
+pileup-aadr inspect chrY_panel.snp --json | grep chrom_set
+# → "chrom_set": "chrY_only"
+
+pileup-aadr extract sample.bam chrY_panel.snp -o out
+# → INFO: Skipping autosomal coverage gate: AADR panel is 'chrY_only' (no
+#   autosomes; --min-coverage threshold doesn't apply). Per-chrom call
+#   counts available in coverage.per_chrom_call_count for downstream sanity.
+```
+
 ## Configuration
 
 Two environment variables let you point at a shared site-wide install of the chain + reference FASTAs:

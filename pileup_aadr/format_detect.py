@@ -403,10 +403,62 @@ def detect_aadr_build(
     )
 
 
+AADR_CHROM_AUTOSOMES: Final[frozenset[str]] = frozenset(str(i) for i in range(1, 23))
+AADR_CHROM_SEX: Final[frozenset[str]] = frozenset({"23", "24"})  # X, Y in AADR encoding
+AADR_CHROM_MT: Final[frozenset[str]] = frozenset({"90"})  # mtDNA in AADR encoding
+
+
+def classify_aadr_chrom_set(aadr_df: pd.DataFrame) -> str:
+    """Classify the chrom set of an AADR `.snp` panel.
+
+    Returns one of:
+        "autosomes+sex"   typical 1240k / HO panels (autosomes + X + Y, optional MT)
+        "autosomes_only"  full 1240k autosomal subset
+        "sex_only"        chrX + chrY only (e.g., sex-chrom-only AADR slice)
+        "chrY_only"       Y-chromosome haplogroup workflows
+        "chrM_only"       mtDNA-only ancient workflows
+        "custom"          anything else (e.g., chr22-only test slice; unusual panels)
+
+    The classification drives whether `extract`'s autosomal coverage gate
+    applies. Non-autosomal panels (chrY-only, chrM-only) skip the gate
+    cleanly rather than failing with a misleading "below --min-coverage"
+    message — the autosomal threshold is meaningless for haplogroup or
+    mtDNA workflows. v0.2 enhancement (HLD §"Out-of-scope reachable
+    extensions").
+    """
+    chroms_present = set(aadr_df["chrom_int"].astype(str).unique())
+    has_autosome = bool(chroms_present & AADR_CHROM_AUTOSOMES)
+    has_sex = bool(chroms_present & AADR_CHROM_SEX)
+    has_mt = bool(chroms_present & AADR_CHROM_MT)
+
+    if has_autosome and has_sex:
+        return "autosomes+sex"
+    if has_autosome and not has_sex and not has_mt:
+        # All autosomes present is "autosomes_only"; partial autosomes (e.g.,
+        # a chr22-only slice) is "custom" — distinguishes 1240k-autosomal-subset
+        # from a one-chrom test panel.
+        if chroms_present == AADR_CHROM_AUTOSOMES:
+            return "autosomes_only"
+        return "custom"
+    if chroms_present == AADR_CHROM_SEX:
+        return "sex_only"
+    if chroms_present == {"24"}:  # only chrY
+        return "chrY_only"
+    if chroms_present == {"90"}:  # only chrM
+        return "chrM_only"
+    return "custom"
+
+
 __all__ = [
+    "AADR_CHROM_AUTOSOMES",
+    "AADR_CHROM_MT",
+    "AADR_CHROM_SEX",
     "HG19_CHR1_LENGTH",
+    "HG19_CHR20_LENGTH",
     "HG38_CHR1_LENGTH",
+    "HG38_CHR20_LENGTH",
     "BuildOverride",
+    "classify_aadr_chrom_set",
     "detect_aadr_build",
     "detect_bam_build",
     "detect_bam_format",
