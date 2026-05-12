@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pileup-aadr"
-version = "0.1.0"
+version = "0.1.1"
 description = "One-shot user-BAM → AADR-site pseudohaploid genotypes for ancient-DNA pipelines"
 readme = "README.md"
 license = {text = "MIT"}
@@ -57,6 +57,10 @@ pileup_aadr = [
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
+# benchmarks/ uses bench_*.py rather than test_*.py to keep them distinct from
+# the unit suite. Default `pytest` doesn't collect them (testpaths excludes
+# benchmarks/); they run when explicitly invoked via `pytest benchmarks/`.
+python_files = ["test_*.py", "bench_*.py"]
 addopts = "-ra --strict-markers"
 markers = [
     "slow: marks tests as slow (>10 sec; run with -m slow to include)",

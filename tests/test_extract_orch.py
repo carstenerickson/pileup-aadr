@@ -55,11 +55,20 @@ def _make_aadr_snp(path: Path, n_sites: int = 50) -> None:
 
 
 def _make_fasta(path: Path, build: str = "hg19") -> None:
-    """Write a minimal FASTA + .fai with chr1 length matching the requested build."""
+    """Write a minimal FASTA + .fai + .dict with chr1 length matching the build.
+
+    The .dict sidecar must exist so the orchestrator's `ensure_target_fasta_dict`
+    pre-flight skips its Picard subprocess (which the tests don't mock).
+    """
     chr1_len = 249_250_621 if build == "hg19" else 248_956_422
     path.write_text(">chr1\nACGT\n")
     fai = Path(f"{path}.fai")
     fai.write_text(f"chr1\t{chr1_len}\t6\t4\t5\nchr22\t51304566\t100\t4\t5\n")
+    Path(f"{path}.dict").write_text(
+        f"@HD\tVN:1.6\n"
+        f"@SQ\tSN:chr1\tLN:{chr1_len}\n"
+        f"@SQ\tSN:chr22\tLN:51304566\n"
+    )
 
 
 # --- Common mocks ---

@@ -44,11 +44,18 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class CheckResult:
-    """One pre-flight check result."""
+    """One pre-flight check result.
+
+    `resolved` carries an artifact path back to follow-up checks (currently
+    only the resolved target FASTA Path, used by `_check_target_fasta_dict`).
+    Excluded from emit_results output so the user-facing TSV/JSON shapes
+    don't change.
+    """
 
     name: str
     status: Literal["PASS", "WARN", "FAIL", "SKIP"]
     detail: str = ""
+    resolved: Path | None = None
 
 
 def run_validate(
@@ -128,7 +135,11 @@ def run_validate(
     results.append(_check_chain(chain_path))
 
     # --- Target FASTA (Day-2: real build verification via ref_resolve) ---
-    results.append(_check_ref_fasta(ref_fasta, bam, bam_build))
+    fasta_check = _check_ref_fasta(ref_fasta, bam, bam_build)
+    results.append(fasta_check)
+
+    # --- Target FASTA .dict (skipped on no-lift fast path; Picard isn't called) ---
+    results.append(_check_target_fasta_dict(fasta_check, no_lift))
 
     # --- Output prefix ---
     if output_prefix is None:
@@ -201,6 +212,9 @@ def _check_ref_fasta(
     For pre-flight purposes we accept any of the three resolution paths (--ref-fasta,
     env, BAM @PG) and report which one resolved. If `bam_build` is unknown (BAM detection
     failed), we skip the build-match verification but still report whether a file exists.
+
+    The resolved Path is also attached to `CheckResult.resolved` for the
+    follow-up `_check_target_fasta_dict` call.
     """
     if cli_ref is not None:
         if not cli_ref.exists():
@@ -211,7 +225,8 @@ def _check_ref_fasta(
             try:
                 verify_fasta_matches_bam_build(cli_ref, bam_build)  # type: ignore[arg-type]
                 return CheckResult(
-                    "ref FASTA findable + build match", "PASS", str(cli_ref)
+                    "ref FASTA findable + build match", "PASS", str(cli_ref),
+                    resolved=cli_ref,
                 )
             except PileupAadrError as e:
                 return CheckResult("ref FASTA build mismatch", "FAIL", e.why)
@@ -219,6 +234,7 @@ def _check_ref_fasta(
             "ref FASTA findable",
             "WARN",
             f"--ref-fasta: {cli_ref} (build verification skipped — BAM build unknown)",
+            resolved=cli_ref,
         )
 
     env_dir = os.environ.get("PILEUP_AADR_REF_DIR")
@@ -230,6 +246,7 @@ def _check_ref_fasta(
                 return CheckResult(
                     "ref FASTA findable + build match", "PASS",
                     f"$PILEUP_AADR_REF_DIR: {candidate}",
+                    resolved=candidate,
                 )
             except PileupAadrError as e:
                 return CheckResult("ref FASTA build mismatch", "FAIL", e.why)
@@ -248,6 +265,7 @@ def _check_ref_fasta(
                 return CheckResult(
                     "ref FASTA findable + build match", "PASS",
                     f"BAM @PG: {extracted}",
+                    resolved=extracted,
                 )
             except PileupAadrError as e:
                 return CheckResult("ref FASTA build mismatch", "FAIL", e.why)
@@ -258,6 +276,49 @@ def _check_ref_fasta(
         "ref FASTA findable",
         "WARN",
         "no --ref-fasta, no $PILEUP_AADR_REF_DIR, and BAM @PG yielded no candidates",
+    )
+
+
+def _check_target_fasta_dict(
+    fasta_check: CheckResult,
+    no_lift: bool,
+) -> CheckResult:
+    """Verify (don't auto-generate) the .dict alongside the resolved FASTA.
+
+    On the no-lift fast path, Picard isn't invoked so .dict isn't needed.
+    Otherwise: PASS if a .dict exists; WARN if missing-but-FASTA-dir-writable
+    (extract will auto-generate it); FAIL if the FASTA itself failed to
+    resolve in the prior check.
+    """
+    if no_lift:
+        return CheckResult(
+            "target FASTA .dict",
+            "SKIP",
+            "no-lift fast path (Picard not invoked; .dict not needed)",
+        )
+    if fasta_check.resolved is None:
+        return CheckResult(
+            "target FASTA .dict",
+            "FAIL",
+            "FASTA did not resolve in prior check; cannot check .dict",
+        )
+
+    from .dict_resolve import find_existing_dict, find_or_user_cache_dict_path
+
+    fasta = fasta_check.resolved
+    existing = find_existing_dict(fasta)
+    if existing is not None:
+        return CheckResult("target FASTA .dict", "PASS", str(existing))
+
+    # No existing .dict — would extract auto-generate? Yes if a write target exists.
+    target = find_or_user_cache_dict_path(fasta)
+    return CheckResult(
+        "target FASTA .dict",
+        "WARN",
+        (
+            f"no .dict alongside {fasta}; extract will auto-generate at {target} "
+            "(one-time ~23s on hg38)"
+        ),
     )
 
 

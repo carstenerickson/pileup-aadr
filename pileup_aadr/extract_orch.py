@@ -26,6 +26,7 @@ from typing import Any
 from . import format_detect, lift, output, pileup_call, rejoin, sites_vcf, transform
 from .concurrency import output_lock, tempdir, warn_if_networked_fs
 from .counters import ExtractCounters
+from .dict_resolve import ensure_target_fasta_dict
 from .errors import (
     CoverageGateFailure,
     OutputExistsError,
@@ -91,6 +92,13 @@ def run_extract(args: ExtractCliArgs) -> int:
         args.bam, bam_format, bam_build, args.aadr_snp, aadr_build,
         "no-lift fast path" if no_lift else "full lift path",
     )
+
+    # Picard's LiftoverVcf needs a sequence dictionary alongside the target
+    # FASTA. Auto-generate via Picard CreateSequenceDictionary if missing
+    # (one-time ~23s on hg38, cached). Skipped on the no-lift fast path since
+    # Picard isn't invoked there.
+    if not no_lift:
+        ensure_target_fasta_dict(ref_fasta)
 
     tool_versions: dict[str, str] = {}
     tool_versions["samtools"] = ToolWrapper(SAMTOOLS_SPEC).version()

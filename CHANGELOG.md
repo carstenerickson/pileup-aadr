@@ -6,6 +6,70 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-05-12
+
+HLD/LLD reconciliation pass: closes the four functional gaps surfaced in
+the v0.1.0 reconciliation review. Adds the bio-tools CI job that would
+have caught the v0.1.0 smoke-test class of bug automatically. 224 tests
+now (15 new), 6-cell + bio-tools CI matrix.
+
+### Added
+- `coverage` subcommand emits the spec'd 9 columns: `chrom`, `length`,
+  `bases`, `mean_coverage`, `median_coverage`, `fraction_at_>=1x`,
+  `fraction_at_>=5x`, `fraction_at_>=10x`, `fraction_at_>=30x`. Median
+  + the four fraction columns are derived from
+  `<prefix>.mosdepth.global.dist.txt` (cumulative depth distribution).
+  Defensive: missing dist file → quantile cols set to NaN, no crash.
+  `--quantize` is forwarded to mosdepth so `.quantized.bed.gz` is also
+  written for users who want bin-level analysis. Closes HLD §"CLI
+  reference > coverage" output-columns spec.
+- `pileup_aadr/dict_resolve.py` — `.dict` auto-generation per HLD §"Chain
+  & reference dependencies > Target FASTA sequence dictionary":
+    - `find_existing_dict` checks both `<fasta>.dict` (Picard's default
+      output convention) and `<fasta-stem>.dict` (GATK resource bundle).
+    - `find_or_user_cache_dict_path` decides where to write a NEW `.dict`:
+      alongside the FASTA when its parent dir is writable, else
+      `~/.cache/pileup-aadr/dicts/<sha-of-abs-path>.dict`.
+    - `ensure_target_fasta_dict` is the front door — returns the existing
+      `.dict` if any, else generates via `picard CreateSequenceDictionary`
+      + caches (~23s on hg38).
+  Wired into `extract_orch.run_extract` after `resolve_ref_fasta` (skipped
+  on the no-lift fast path; Picard isn't invoked there) + into
+  `validate_impl` as a new `target FASTA .dict` check (PASS if dict exists,
+  WARN if extract would auto-generate, SKIP on no-lift).
+- `tests/integration/` — real-binary integration suite (skipped silently
+  when binaries are missing). Catches the smoke-test class of bug
+  (Picard --version regex, CompletedProcess.pid, scientific-notation
+  parser drift) automatically rather than requiring manual GCP-instance
+  re-discovery.
+    - `test_real_binaries.py`: 4 version-probe tests + 1 end-to-end
+      `extract` against UCSC hg38 chr22 (downloaded + cached) + 1
+      `coverage`-via-real-mosdepth test.
+    - `test_pgen_samplebind_composition.py`: 3 always-runs shape-contract
+      tests verifying `<prefix>.pseudohaploid.json` carries every field
+      pgen-samplebind#2 enumerates + 1 live-binary test (skipped without
+      pgen-samplebind on PATH). Maps to LLD #19.
+- `benchmarks/bench_extract.py` — reproducible end-to-end perf bench per
+  LLD §"Performance benchmark (test #20)". Points at user-supplied bench
+  data via `PILEUP_AADR_BENCH_BAM` / `_SNP` / `_REF` env vars; skipped
+  when unset. Reports wallclock; asserts a generous 10-min ceiling
+  (tighter regression detection is hardware-dependent, deferred to user
+  pinning).
+- `.github/workflows/ci.yml` — new `bio-tools` job: installs Picard 3.3.0
+  + samtools 1.23.1 + sequencetools 1.6.0 + mosdepth 0.3.6 from bioconda
+  via `conda-incubator/setup-miniconda@v3`, caches the chr22 FASTA
+  fixture, runs `pytest tests/integration/`. Mirrors LLD §18's `current`
+  matrix entry.
+- `pytest` config: `python_files = ["test_*.py", "bench_*.py"]` so
+  `pytest benchmarks/` discovers the bench module without treating bench
+  files as part of the default unit suite.
+
+### Fixed
+- HLD CLI ref drift: `--no-baq` (HLD spec) → `--enable-baq` (impl). The
+  positive-flag form is what shipped at v0.1.0; HLD now matches. The
+  orchestrator + dataclass field stay positively-named (`no_baq`); the
+  click layer flips at the boundary.
+
 ## [0.1.0] — 2026-05-12
 
 First tagged release. Surface complete: 4 subcommands (`extract`,

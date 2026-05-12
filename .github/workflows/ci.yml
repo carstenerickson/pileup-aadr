@@ -63,3 +63,53 @@ jobs:
       # as errors that aren't blocking. Re-enable strict-fail once stubs land.
       - name: mypy (informational)
         run: mypy pileup_aadr || true
+
+  bio-tools:
+    name: bio-tools integration (Picard + samtools + pileupCaller + mosdepth)
+    # Catches the smoke-test class of bug (Picard --version regex,
+    # CompletedProcess.pid, scientific-notation parser drift) BEFORE they need
+    # to be re-discovered manually on a GCP instance. Real binaries via bioconda;
+    # extract end-to-end against a tiny chr22 fixture.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -el {0}  # `-l` so conda env activation persists across steps
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up miniconda + bioconda channel
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          auto-update-conda: true
+          python-version: "3.12"
+          channels: bioconda,conda-forge
+          channel-priority: strict
+
+      - name: Install pinned bio tools
+        # Versions match LLD §18 `current` matrix entry (v2.1-verified).
+        # The Picard 3.3.0 conda package is `picard=3.3.0` from bioconda.
+        run: |
+          conda install -y -c bioconda \
+            samtools=1.23.1 \
+            sequencetools=1.6.0 \
+            picard=3.3.0 \
+            mosdepth=0.3.6
+          # bioconda's `picard` wrapper drops the JAR at $CONDA_PREFIX/share/picard-*/picard.jar
+          PICARD_JAR=$(ls "$CONDA_PREFIX"/share/picard-*/picard.jar | head -n1)
+          echo "PICARD_JAR=$PICARD_JAR" >> "$GITHUB_ENV"
+
+      - name: Cache hg38 chr22 fixture
+        uses: actions/cache@v4
+        with:
+          path: tests/integration/fixtures/chr22.fa*
+          key: hg38-chr22-fasta-v1
+
+      - name: Install package + test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+
+      - name: Run integration tests
+        # `--run-slow` stand-in: the test_extract_end_to_end is marked slow but
+        # bio-tools is the dedicated job for it, so include slow.
+        run: pytest tests/integration/ -v -m "slow or not slow"

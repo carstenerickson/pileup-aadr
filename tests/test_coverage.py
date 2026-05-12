@@ -54,8 +54,13 @@ def _setup_mosdepth_mock(
     monkeypatch: pytest.MonkeyPatch,
     *,
     summary_text: str,
+    dist_text: str = "",
 ) -> None:
-    """Patch ToolWrapper to bypass binary lookup + simulate mosdepth's outputs."""
+    """Patch ToolWrapper to bypass binary lookup + simulate mosdepth's outputs.
+
+    Both summary.txt and global.dist.txt are written under <prefix>.mosdepth.*
+    in the orchestrator's tempdir so coverage_impl's parsers can read them.
+    """
     import subprocess
     monkeypatch.setattr(
         subprocess, "run",
@@ -84,8 +89,10 @@ def _setup_mosdepth_mock(
         # The args list ends with [..., prefix, bam] per coverage_impl
         prefix = Path(args[-2])
         summary_path = Path(f"{prefix}.mosdepth.summary.txt")
+        dist_path = Path(f"{prefix}.mosdepth.global.dist.txt")
         summary_path.parent.mkdir(parents=True, exist_ok=True)
         summary_path.write_text(summary_text)
+        dist_path.write_text(dist_text)
         capture_stderr_to.write_text("")
         return ToolRunResult(
             exit_code=0, stdout=None, stderr_path=capture_stderr_to,
@@ -95,11 +102,30 @@ def _setup_mosdepth_mock(
     monkeypatch.setattr(coverage_impl.ToolWrapper, "run", fake_run)
 
 
+# mosdepth global.dist.txt format: chrom\tdepth\tcumulative_fraction (descending depth).
+# Synthetic distribution: 30x covers 50% of chr1, 10x covers 80%, 5x covers 95%, 1x = 99%.
+_DIST_CHR1 = (
+    "chr1\t100\t0.0\n"
+    "chr1\t30\t0.5\n"
+    "chr1\t10\t0.8\n"
+    "chr1\t5\t0.95\n"
+    "chr1\t1\t0.99\n"
+    "chr1\t0\t1.0\n"
+)
+_DIST_CHR22 = (
+    "chr22\t30\t0.1\n"
+    "chr22\t10\t0.4\n"
+    "chr22\t5\t0.7\n"
+    "chr22\t1\t0.95\n"
+    "chr22\t0\t1.0\n"
+)
+
+
 def test_run_coverage_emits_tsv(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Default (TSV) mode: header + one row per chrom."""
+    """Default (TSV) mode: 9-col header + per-chrom row with median + frac>=Nx."""
     bam = tmp_path / "user.bam"
     bam.touch()
     _setup_mosdepth_mock(
@@ -109,22 +135,37 @@ def test_run_coverage_emits_tsv(
             "chr1\t249250621\t12345678\t30.5\t0\t100\n"
             "chr22\t51304566\t2000000\t25.0\t0\t80\n"
         ),
+        dist_text=_DIST_CHR1 + _DIST_CHR22,
     )
     args = CoverageCliArgs(bam=bam)
     exit_code = run_coverage(args)
     assert exit_code == 0
 
     out = capsys.readouterr().out.splitlines()
-    assert out[0] == "chrom\tlength\tbases\tmean_coverage"
-    assert "chr1\t249250621\t12345678\t30.5" in out
-    assert "chr22\t51304566\t2000000\t25.0" in out
+    # Header lists all 9 columns per HLD §"CLI reference > coverage"
+    assert out[0] == (
+        "chrom\tlength\tbases\tmean_coverage\tmedian_coverage"
+        "\tfraction_at_>=1x\tfraction_at_>=5x"
+        "\tfraction_at_>=10x\tfraction_at_>=30x"
+    )
+    # chr1: median is 30 (largest depth where frac>=0.5);
+    # frac@1x=0.99, @5x=0.95, @10x=0.8, @30x=0.5
+    assert any(
+        line.startswith("chr1\t249250621\t12345678\t30.5\t30\t0.99\t0.95\t0.8\t0.5")
+        for line in out
+    )
+    # chr22: median is 5 (largest depth where frac>=0.5; 0.7 at 5x, 0.4 at 10x)
+    assert any(
+        line.startswith("chr22\t51304566\t2000000\t25.0\t5\t0.95\t0.7\t0.4\t0.1")
+        for line in out
+    )
 
 
 def test_run_coverage_emits_json(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """--json mode: stdout is the parsed dict serialized."""
+    """--json mode: per-chrom dict carries the median + 4 fraction fields."""
     bam = tmp_path / "user.bam"
     bam.touch()
     _setup_mosdepth_mock(
@@ -133,11 +174,48 @@ def test_run_coverage_emits_json(
             "chrom\tlength\tbases\tmean\tmin\tmax\n"
             "chr1\t249250621\t12345678\t30.5\t0\t100\n"
         ),
+        dist_text=_DIST_CHR1,
     )
     args = CoverageCliArgs(bam=bam, json_output=True)
     run_coverage(args)
     payload = json.loads(capsys.readouterr().out)
-    assert payload["per_chrom"]["chr1"]["mean_coverage"] == 30.5
+    chr1 = payload["per_chrom"]["chr1"]
+    assert chr1["mean_coverage"] == 30.5
+    assert chr1["median_coverage"] == 30
+    assert chr1["fraction_at_>=1x"] == 0.99
+    assert chr1["fraction_at_>=5x"] == 0.95
+    assert chr1["fraction_at_>=10x"] == 0.8
+    assert chr1["fraction_at_>=30x"] == 0.5
+
+
+def test_empty_global_dist_yields_nan_quantile_cols(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Defensive: empty global.dist.txt → median + fraction cols stringify
+    as 'nan', not crash."""
+    bam = tmp_path / "user.bam"
+    bam.touch()
+    _setup_mosdepth_mock(
+        monkeypatch,
+        summary_text=(
+            "chrom\tlength\tbases\tmean\tmin\tmax\n"
+            "chr1\t249250621\t12345678\t30.5\t0\t100\n"
+        ),
+        dist_text="",
+    )
+    args = CoverageCliArgs(bam=bam)
+    run_coverage(args)
+    out = capsys.readouterr().out.splitlines()
+    # When dist is empty, _merge sets NaN; format() renders NaN as "nan" and
+    # repr-floats it (median 0 since the for-loop never matches frac>=0.5).
+    # Median goes through `int = 0`; the four frac cols are NaN.
+    chr1_row = next(line for line in out if line.startswith("chr1\t"))
+    parts = chr1_row.split("\t")
+    # cols: chrom length bases mean median frac>=1 frac>=5 frac>=10 frac>=30
+    # All five derived cols are NaN when there's no global.dist data
+    for v in parts[4:9]:
+        assert v == "nan"
 
 
 # --- cli.py wiring ---
