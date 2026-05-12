@@ -1,9 +1,0 @@
-# Placeholder so the data/ directory is checked into git.
-#
-# Per LLD §17 + HLD §"Bundled chain file packaging", this directory will hold:
-#   hg19ToHg38.over.chain.gz       (~223 KB; UCSC liftover chain)
-#   hg19ToHg38.over.chain.gz.sha256 (single-line lowercase hex)
-#
-# Maintainer adds these via `make refresh-chain-sha` once the chain bytes are dropped
-# in. Day 1 commits ship without them; the runtime resolver in lift.py (Day 3) will
-# raise ChainFileNotFound with reinstall guidance until they're populated.

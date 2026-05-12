@@ -1,28 +1,42 @@
 """`validate` subcommand implementation — 10 pre-flight checks per LLD §16.
 
-Day-1 scope: file-side checks fully implemented (BAM index, BAM build, AADR parse, AADR
-build, output-prefix collisions, ref-FASTA findability). Binary-version checks are stubbed
-to PASS-with-skip-reason because `tool_wrapper.py` lands on Day 2; the stubs are tagged
-with TODO comments naming the Day-2 implementation gap.
+Day-2 scope: tool-version probes via `tool_wrapper` + ref-FASTA findability + build
+verification via `ref_resolve` + chain-file resolution via `lift`. The stubbed
+binary-presence checks from Day 1 have been replaced with real version checks.
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
-import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from .errors import PileupAadrError
+import pandas as pd
+
+from .errors import (
+    PileupAadrError,
+    ToolNotFoundError,
+    ToolVersionError,
+)
 from .format_detect import (
     BuildOverride,
     detect_aadr_build,
     detect_bam_build,
     detect_bam_format,
     parse_aadr_snp,
+)
+from .lift import resolve_chain_for_extract
+from .ref_resolve import verify_fasta_matches_bam_build
+from .tool_wrapper import (
+    JAVA_SPEC,
+    PICARD_SPEC,
+    PILEUPCALLER_SPEC,
+    SAMTOOLS_SPEC,
+    ToolSpec,
+    ToolWrapper,
 )
 
 log = logging.getLogger(__name__)
@@ -100,33 +114,20 @@ def run_validate(
     # --- determine no-lift fast path ---
     no_lift = bam_build is not None and aadr_build is not None and bam_build == aadr_build
 
-    # --- Tool dependencies ---
-    # Day-1 scope note: real version checks land on Day 2 (tool_wrapper.py).
-    # For now, we just confirm the binary is on PATH and report SKIP-with-reason if not.
-    results.append(_check_binary_present("samtools", required=True))
+    # --- Tool dependencies (Day-2 fix: real version probes via tool_wrapper) ---
+    results.append(_check_tool(SAMTOOLS_SPEC))
     if no_lift:
         results.append(CheckResult("picard binary", "SKIP", "no-lift fast path"))
         results.append(CheckResult("java binary", "SKIP", "no-lift fast path"))
     else:
-        results.append(_check_binary_present("picard", required=True, also_check=("picard.jar",)))
-        results.append(_check_binary_present("java", required=True))
-    results.append(_check_binary_present("pileupCaller", required=True))
+        results.append(_check_tool(PICARD_SPEC))
+        results.append(_check_tool(JAVA_SPEC))
+    results.append(_check_tool(PILEUPCALLER_SPEC))
 
-    # --- Chain ---
-    if chain_path is not None and not chain_path.exists():
-        results.append(
-            CheckResult("chain file", "FAIL", f"--chain {chain_path} not found")
-        )
-    else:
-        results.append(
-            CheckResult(
-                "chain file",
-                "PASS",
-                "user-supplied" if chain_path is not None else "bundled (default)",
-            )
-        )
+    # --- Chain (Day-2: bundled-chain SHA verification + 3-tier resolution) ---
+    results.append(_check_chain(chain_path))
 
-    # --- Target FASTA ---
+    # --- Target FASTA (Day-2: real build verification via ref_resolve) ---
     results.append(_check_ref_fasta(ref_fasta, bam, bam_build))
 
     # --- Output prefix ---
@@ -140,8 +141,6 @@ def run_validate(
 
 def _aadr_parse_pass(aadr_df: object) -> CheckResult:
     """parse_aadr_snp succeeded — render a PASS with summary."""
-    import pandas as pd
-
     if not isinstance(aadr_df, pd.DataFrame):
         return CheckResult("AADR .snp parseable", "FAIL", "internal error: non-DataFrame")
     return CheckResult(
@@ -164,58 +163,101 @@ def _bam_index_check(bam: Path, bam_format: str) -> CheckResult:
     return CheckResult("BAM readable + indexed", "PASS", f"{bam_format}, index present")
 
 
-def _check_binary_present(
-    binary: str, *, required: bool, also_check: tuple[str, ...] = ()
-) -> CheckResult:
-    """Check that a binary is on PATH or available at one of the also_check paths.
-
-    Day-1 stub: just on-PATH presence; version check lands on Day 2 via tool_wrapper.
-    """
-    found_path = shutil.which(binary)
-    if found_path is not None:
+def _check_tool(spec: ToolSpec) -> CheckResult:
+    """Probe a tool's binary + version via ToolWrapper (Day-2 fix: real version check)."""
+    try:
+        observed = ToolWrapper(spec).version()
         return CheckResult(
-            f"{binary} binary",
+            f"{spec.binary} version",
             "PASS",
-            f"{found_path} (Day-2 TODO: version-check via tool_wrapper)",
+            f"{observed} (>= {spec.min_version} required; tested against {spec.tested_against})",
         )
-    # Try fallback locations (e.g., picard.jar in conda paths)
-    for candidate in also_check:
-        if shutil.which(candidate) is not None:
+    except (ToolNotFoundError, ToolVersionError, PileupAadrError) as e:
+        return CheckResult(f"{spec.binary} version", "FAIL", e.why)
+
+
+def _check_chain(cli_chain: Path | None) -> CheckResult:
+    """Verify the chain file resolves cleanly (bundled or user-supplied) + SHA OK."""
+    try:
+        resolved = resolve_chain_for_extract(cli_chain=cli_chain)
+        if cli_chain is not None:
             return CheckResult(
-                f"{binary} binary",
-                "PASS",
-                f"{candidate} found (Day-2 TODO: version-check)",
+                "chain file", "PASS", f"user-supplied: {resolved} (SHA not enforced)"
             )
-    return CheckResult(
-        f"{binary} binary",
-        "FAIL" if required else "WARN",
-        f"not found on PATH; install via `conda install -c bioconda {binary.lower()}`",
-    )
+        return CheckResult(
+            "chain file", "PASS", f"bundled: {resolved.name} (SHA verified)"
+        )
+    except PileupAadrError as e:
+        return CheckResult("chain file", "FAIL", e.why)
 
 
 def _check_ref_fasta(
-    cli_ref: Path | None, bam: Path | None, bam_build: str | None
+    cli_ref: Path | None,
+    bam: Path | None,
+    bam_build: str | None,
 ) -> CheckResult:
-    """Resolve target FASTA per the LLD §15 resolution order; report what was found."""
+    """Resolve target FASTA + verify chr1 length matches BAM build (Day-2 fix).
+
+    For pre-flight purposes we accept any of the three resolution paths (--ref-fasta,
+    env, BAM @PG) and report which one resolved. If `bam_build` is unknown (BAM detection
+    failed), we skip the build-match verification but still report whether a file exists.
+    """
     if cli_ref is not None:
-        if cli_ref.exists():
-            return CheckResult("ref FASTA findable", "PASS", f"--ref-fasta: {cli_ref}")
+        if not cli_ref.exists():
+            return CheckResult(
+                "ref FASTA findable", "FAIL", f"--ref-fasta {cli_ref} not found"
+            )
+        if bam_build is not None:
+            try:
+                verify_fasta_matches_bam_build(cli_ref, bam_build)  # type: ignore[arg-type]
+                return CheckResult(
+                    "ref FASTA findable + build match", "PASS", str(cli_ref)
+                )
+            except PileupAadrError as e:
+                return CheckResult("ref FASTA build mismatch", "FAIL", e.why)
         return CheckResult(
-            "ref FASTA findable", "FAIL", f"--ref-fasta {cli_ref} not found"
+            "ref FASTA findable",
+            "WARN",
+            f"--ref-fasta: {cli_ref} (build verification skipped — BAM build unknown)",
         )
+
     env_dir = os.environ.get("PILEUP_AADR_REF_DIR")
     if env_dir and bam_build is not None:
         candidate = Path(env_dir) / f"{bam_build}.fa"
         if candidate.exists():
-            return CheckResult(
-                "ref FASTA findable", "PASS", f"$PILEUP_AADR_REF_DIR: {candidate}"
-            )
-    # BAM @PG fallback — full check requires extract_orch's _extract_ref_from_bam_pg
-    # which lands on Day 3. For Day 1 just report SKIP-with-reason.
+            try:
+                verify_fasta_matches_bam_build(candidate, bam_build)  # type: ignore[arg-type]
+                return CheckResult(
+                    "ref FASTA findable + build match", "PASS",
+                    f"$PILEUP_AADR_REF_DIR: {candidate}",
+                )
+            except PileupAadrError as e:
+                return CheckResult("ref FASTA build mismatch", "FAIL", e.why)
+
+    # BAM @PG fallback path — only attempt if we have a BAM to inspect.
+    # The full extraction logic lives in ref_resolve._extract_ref_from_bam_pg
+    # but for validate's pre-flight we do a lightweight inspection that
+    # doesn't raise on missing path.
+    if bam is not None and bam_build is not None:
+        from .ref_resolve import _extract_ref_from_bam_pg
+
+        try:
+            extracted = _extract_ref_from_bam_pg(bam)
+            try:
+                verify_fasta_matches_bam_build(extracted, bam_build)  # type: ignore[arg-type]
+                return CheckResult(
+                    "ref FASTA findable + build match", "PASS",
+                    f"BAM @PG: {extracted}",
+                )
+            except PileupAadrError as e:
+                return CheckResult("ref FASTA build mismatch", "FAIL", e.why)
+        except PileupAadrError as e:
+            return CheckResult("ref FASTA findable", "WARN", e.why)
+
     return CheckResult(
         "ref FASTA findable",
-        "SKIP",
-        "Day-2 TODO: BAM @PG fallback lookup",
+        "WARN",
+        "no --ref-fasta, no $PILEUP_AADR_REF_DIR, and BAM @PG yielded no candidates",
     )
 
 
