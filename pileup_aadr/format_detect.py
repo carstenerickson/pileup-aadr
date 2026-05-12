@@ -27,10 +27,32 @@ log = logging.getLogger(__name__)
 
 BuildOverride = Literal["hg19", "hg38", "auto"]
 
-# Canonical chr1 lengths per assembly (hardcoded; chromosome lengths are byte-stable)
+# Canonical chromosome lengths per assembly (hardcoded; chrom lengths are byte-stable).
+# chr1 is the primary anchor; chr20 is the fallback when chr1 is absent (e.g.,
+# chrY-only BAMs in haplogroup workflows). chr20 has a wider hg19/hg38 gap
+# (~1.4 Mb) than chr1's 294 KB, so the per-anchor tolerance lookup picks the
+# correct build cleanly via closest-match.
 HG19_CHR1_LENGTH: Final[int] = 249_250_621
 HG38_CHR1_LENGTH: Final[int] = 248_956_422
+HG19_CHR20_LENGTH: Final[int] = 63_025_520
+HG38_CHR20_LENGTH: Final[int] = 64_444_167
 _BUILD_TOLERANCE_BP: Final[int] = 1_000_000  # ±1Mb tolerance for patch-level differences
+
+# Per-anchor build lookup: tried in order until one anchor's chrom name is
+# present. Each entry: (anchor_name, {build: canonical_length}).
+_BUILD_ANCHORS: Final[tuple[tuple[tuple[str, ...], dict[str, int]], ...]] = (
+    (("chr1", "1"), {"hg19": HG19_CHR1_LENGTH, "hg38": HG38_CHR1_LENGTH}),
+    (("chr20", "20"), {"hg19": HG19_CHR20_LENGTH, "hg38": HG38_CHR20_LENGTH}),
+)
+
+
+def _closest_build_for(
+    observed_length: int, anchors: dict[str, int],
+) -> tuple[str, int]:
+    """Return (build, distance) for the build whose canonical length is
+    closest to `observed_length`. Caller checks distance vs tolerance."""
+    distances = {b: abs(observed_length - exp) for b, exp in anchors.items()}
+    return min(distances.items(), key=lambda kv: kv[1])
 
 # IID character set restriction for EIGENSOFT compatibility
 _SAFE_IID_RE: Final[re.Pattern[str]] = re.compile(r"[^A-Za-z0-9_.-]")
@@ -119,42 +141,57 @@ def detect_bam_build(
     # Header reads don't need reference_filename even for CRAM (header is in the file).
     with pysam.AlignmentFile(str(bam_path), "r", check_sq=False) as bam:
         sq_records = bam.header.get("SQ", [])
-        chr1_record = next(
-            (sq for sq in sq_records if sq["SN"] in ("chr1", "1")),
-            None,
-        )
-        if chr1_record is None:
-            raise UnsupportedReferenceBuild(
-                what=str(bam_path),
-                why="BAM @SQ has no chr1 / 1 record; cannot determine build",
-                fix="Pass --bam-build hg19|hg38 to override detection",
-            )
-        chr1_length = int(chr1_record["LN"])
+        sn_to_ln = {sq["SN"]: int(sq["LN"]) for sq in sq_records}
 
-    # Closest-match: hg19 chr1 (249,250,621) and hg38 chr1 (248,956,422) are
-    # only 294 KB apart — well INSIDE the ±1 Mb tolerance window. The previous
-    # first-match-wins logic always returned "hg19" for hg38 BAMs because the
-    # hg19 branch fired first within tolerance. Pick the closer build, then
-    # verify the closer match also fits the patch-level tolerance window.
-    # Mirrors the same fix already applied to detect_aadr_build (issue #1
-    # was a regression of this same bug class in detect_bam_build).
-    distances = {
-        "hg19": abs(chr1_length - HG19_CHR1_LENGTH),
-        "hg38": abs(chr1_length - HG38_CHR1_LENGTH),
-    }
-    closest_build, closest_dist = min(distances.items(), key=lambda kv: kv[1])
-    if closest_dist <= _BUILD_TOLERANCE_BP:
-        return closest_build  # type: ignore[return-value]
-    raise UnsupportedReferenceBuild(
+    # Try anchors in order — chr1 first, chr20 fallback for chrY-only BAMs etc.
+    # Closest-match per anchor: hg19 chr1 (249,250,621) and hg38 chr1
+    # (248,956,422) are only 294 KB apart — well INSIDE the ±1 Mb tolerance,
+    # so first-match-wins logic returned "hg19" for every hg38 BAM (#1).
+    # Closest-match disambiguates cleanly.
+    last_anchor_seen: str | None = None
+    for anchor_names, anchors in _BUILD_ANCHORS:
+        observed = next(
+            (sn_to_ln[name] for name in anchor_names if name in sn_to_ln), None,
+        )
+        if observed is None:
+            continue
+        last_anchor_seen = anchor_names[0]
+        closest_build, closest_dist = _closest_build_for(observed, anchors)
+        if closest_dist <= _BUILD_TOLERANCE_BP:
+            return closest_build  # type: ignore[return-value]
+        # The anchor is present but its length doesn't match either build —
+        # likely a non-hg19/hg38 assembly (T2T-CHM13). No point trying further
+        # anchors; they'd produce the same diagnosis.
+        raise UnsupportedReferenceBuild(
+            what=str(bam_path),
+            why=(
+                f"BAM @SQ {anchor_names[0]} length {observed} matches neither "
+                f"hg19 ({anchors['hg19']}) nor hg38 ({anchors['hg38']}) within ±1 Mb"
+            ),
+            fix=(
+                f"Pass --bam-build hg19|hg38 to override (if the BAM is "
+                f"hg19/hg38-compatible despite differing {anchor_names[0]} length, "
+                f"e.g., T2T-CHM13 fragments)"
+            ),
+        )
+
+    # Fell through both anchors — no chr1 OR chr20 in @SQ. Diagnostic names
+    # both anchors so users with esoteric chrom-only BAMs know what we tried.
+    if last_anchor_seen is None:
+        raise UnsupportedReferenceBuild(
+            what=str(bam_path),
+            why=(
+                "BAM @SQ has neither chr1/1 nor chr20/20 record; cannot "
+                "determine build"
+            ),
+            fix="Pass --bam-build hg19|hg38 to override detection",
+        )
+    # Unreachable — `last_anchor_seen` would have triggered the per-anchor
+    # raise above. Placeholder for the type-checker.
+    raise UnsupportedReferenceBuild(  # pragma: no cover
         what=str(bam_path),
-        why=(
-            f"BAM @SQ chr1 length {chr1_length} matches neither hg19 ({HG19_CHR1_LENGTH}) "
-            f"nor hg38 ({HG38_CHR1_LENGTH}) within ±1 Mb"
-        ),
-        fix=(
-            "Pass --bam-build hg19|hg38 to override (if the BAM is hg19/hg38-compatible "
-            "despite differing chr1 length, e.g., T2T-CHM13 fragments)"
-        ),
+        why="internal error: anchor detection fell through",
+        fix="Pass --bam-build hg19|hg38 to override",
     )
 
 
@@ -318,31 +355,51 @@ def detect_aadr_build(
     if override != "auto":
         return override  # type: ignore[return-value]
 
-    chr1_rows = aadr_df[aadr_df["chrom_int"] == "1"]
-    if chr1_rows.empty:
+    # Per-anchor lookup: try chr1 (numeric "1" in AADR encoding), fall back to
+    # chr20 ("20") for the chrY-only / chr-only AADR slice case. AADR positions
+    # are typically near the chrom end, so the per-anchor tolerance is wider
+    # (5 Mb) than the BAM @SQ length check.
+    aadr_anchors = (
+        ("1", {"hg19": HG19_CHR1_LENGTH, "hg38": HG38_CHR1_LENGTH}),
+        ("20", {"hg19": HG19_CHR20_LENGTH, "hg38": HG38_CHR20_LENGTH}),
+    )
+    aadr_tolerance = 5_000_000
+
+    last_anchor_seen: str | None = None
+    for anchor_chrom, anchors in aadr_anchors:
+        rows = aadr_df[aadr_df["chrom_int"] == anchor_chrom]
+        if rows.empty:
+            continue
+        last_anchor_seen = anchor_chrom
+        observed_max = int(rows["pos_bp"].max())
+        closest_build, closest_dist = _closest_build_for(observed_max, anchors)
+        if closest_dist <= aadr_tolerance:
+            return closest_build  # type: ignore[return-value]
+        # Present-but-unrecognized — same logic as detect_bam_build's per-anchor raise
         raise UnsupportedAADRBuild(
-            what="(AADR DataFrame)",
-            why="no chr1 (chrom_int='1') rows found; cannot determine build",
+            what=f"chr{anchor_chrom} max position {observed_max}",
+            why=(
+                f"matches neither hg19 ({anchors['hg19']}) nor hg38 "
+                f"({anchors['hg38']}) within {aadr_tolerance // 1_000_000} Mb"
+            ),
             fix="Pass --aadr-build hg19|hg38 to override detection",
         )
-    chr1_max = int(chr1_rows["pos_bp"].max())
-    # The hg19 and hg38 chr1 windows overlap heavily (hg19 = 249,250,621; hg38 = 248,956,422;
-    # difference 294 KB). A simple "<= length AND >= length - tolerance" check picks hg19
-    # for any position in the overlap. Pick the closest assembly instead.
-    dist_hg19 = abs(chr1_max - HG19_CHR1_LENGTH)
-    dist_hg38 = abs(chr1_max - HG38_CHR1_LENGTH)
-    tolerance = 5_000_000  # 5 Mb tolerance — AADR positions can be near the chrom end
-    if dist_hg19 <= tolerance and dist_hg19 <= dist_hg38:
-        return "hg19"
-    if dist_hg38 <= tolerance and dist_hg38 < dist_hg19:
-        return "hg38"
-    raise UnsupportedAADRBuild(
-        what=f"chr1 max position {chr1_max}",
-        why=(
-            f"matches neither hg19 ({HG19_CHR1_LENGTH}) nor hg38 ({HG38_CHR1_LENGTH}) "
-            "within 5 Mb"
-        ),
-        fix="Pass --aadr-build hg19|hg38 to override; v0.1 expects AADR hg19 (default through v66)",
+
+    if last_anchor_seen is None:
+        raise UnsupportedAADRBuild(
+            what="(AADR DataFrame)",
+            why=(
+                "no chr1 (chrom_int='1') OR chr20 (chrom_int='20') rows found; "
+                "cannot determine build"
+            ),
+            fix="Pass --aadr-build hg19|hg38 to override detection",
+        )
+
+    # Unreachable — `last_anchor_seen` would have triggered the per-anchor raise
+    raise UnsupportedAADRBuild(  # pragma: no cover
+        what="(AADR DataFrame)",
+        why="internal error: anchor detection fell through",
+        fix="Pass --aadr-build hg19|hg38 to override",
     )
 
 

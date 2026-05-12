@@ -143,3 +143,67 @@ def test_validate_no_lift_skips_picard_java(
     assert picard_check["status"] == "SKIP"
     assert java_check["status"] == "SKIP"
     assert "no-lift" in picard_check["detail"]
+
+
+# --- Tool flag-probe checks (v0.2 #1: catches CLI drift at validate time) ---
+
+
+def test_flag_probe_pass_path(tmp_path: Path) -> None:
+    """`_probe_help_for_flags` finds all required flags when present in --help output."""
+    from pileup_aadr.validate_impl import _probe_help_for_flags
+
+    # Use `python --help` as a stable source of help text with predictable flags.
+    result = _probe_help_for_flags(
+        name="python flag probe",
+        invocation=["python3", "--help"],
+        required_flags=("-c", "-m", "-h"),
+    )
+    assert result.status == "PASS", result.detail
+
+
+def test_flag_probe_fail_lists_missing(tmp_path: Path) -> None:
+    """When a flag is missing from --help output, FAIL names which one(s)."""
+    from pileup_aadr.validate_impl import _probe_help_for_flags
+
+    result = _probe_help_for_flags(
+        name="python flag probe",
+        invocation=["python3", "--help"],
+        required_flags=("-c", "--bogus-flag-that-doesnt-exist", "-m"),
+    )
+    assert result.status == "FAIL"
+    assert "--bogus-flag-that-doesnt-exist" in result.detail
+    # Both real flags should NOT be in the missing list
+    assert "-c" not in result.detail.split("flags not found in --help output: ", 1)[1]
+
+
+def test_flag_probe_word_boundary_matching(tmp_path: Path) -> None:
+    """`-q` should match `-q` or `-q,` but not `-quiet` (substring guard)."""
+    from pileup_aadr.validate_impl import _probe_help_for_flags
+
+    # Write a fake help text via a here-doc-style trick: invoke python -c that prints it.
+    fake_help_script = (
+        'import sys; '
+        'print("Usage:\\n  -quiet           do quiet things\\n", file=sys.stderr); '
+        'sys.exit(1)'
+    )
+    result = _probe_help_for_flags(
+        name="boundary probe",
+        invocation=["python3", "-c", fake_help_script],
+        required_flags=("-q",),  # this should NOT match `-quiet`
+    )
+    assert result.status == "FAIL", (
+        f"-q should not match -quiet (would be a false-pass); got: {result.detail}"
+    )
+
+
+def test_flag_probe_missing_binary_fails_cleanly(tmp_path: Path) -> None:
+    """If the binary doesn't exist, FAIL with a clear message (no traceback)."""
+    from pileup_aadr.validate_impl import _probe_help_for_flags
+
+    result = _probe_help_for_flags(
+        name="bogus tool probe",
+        invocation=["this-binary-does-not-exist-anywhere", "--help"],
+        required_flags=("-x",),
+    )
+    assert result.status == "FAIL"
+    assert "could not run" in result.detail

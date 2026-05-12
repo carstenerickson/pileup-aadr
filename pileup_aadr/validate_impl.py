@@ -131,6 +131,21 @@ def run_validate(
         results.append(_check_tool(JAVA_SPEC))
     results.append(_check_tool(PILEUPCALLER_SPEC))
 
+    # --- Tool flag probes (v0.2 #1: catch tool-CLI drift at validate time) ---
+    # Run each tool's --help and confirm the specific flags pileup-aadr will
+    # use are present. Catches the bug class where samtools/Picard/etc. rename
+    # or drop a flag in a new release (e.g., issue #2: `samtools mpileup -@`
+    # was always invalid; we shipped it for two patch releases anyway).
+    results.append(_check_tool_flags_samtools_mpileup())
+    results.append(_check_tool_flags_pileupcaller())
+    results.append(_check_tool_flags_mosdepth())
+    if no_lift:
+        results.append(
+            CheckResult("picard LiftoverVcf flag probe", "SKIP", "no-lift fast path"),
+        )
+    else:
+        results.append(_check_tool_flags_picard_liftover())
+
     # --- Chain (Day-2: bundled-chain SHA verification + 3-tier resolution) ---
     results.append(_check_chain(chain_path))
 
@@ -172,6 +187,112 @@ def _bam_index_check(bam: Path, bam_format: str) -> CheckResult:
             "BAM index", "FAIL", f"no index ({'/'.join(p.suffix for p in bai_candidates)}) found"
         )
     return CheckResult("BAM readable + indexed", "PASS", f"{bam_format}, index present")
+
+
+def _probe_help_for_flags(
+    name: str,
+    invocation: list[str],
+    required_flags: tuple[str, ...],
+    *,
+    timeout: float = 10.0,
+) -> CheckResult:
+    """Run `invocation` (the help command), grep stdout+stderr for each
+    required flag. Returns PASS if all flags found, FAIL listing the missing
+    ones. Tool exit code is ignored — many tools exit non-zero on --help.
+
+    `name` is the human-readable check name shown in the report.
+    `required_flags` are matched as whole-word substrings (e.g., '-@'
+    matches '-@' or '-@,' but not 'foo-@bar').
+    """
+    import re
+    import subprocess
+    try:
+        proc = subprocess.run(
+            invocation, capture_output=True, text=True,
+            timeout=timeout, check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return CheckResult(name, "FAIL", f"could not run {invocation[0]}: {e}")
+    combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    missing: list[str] = []
+    for flag in required_flags:
+        # Word-boundary-ish match: flag preceded/followed by non-alnum or line edge.
+        pattern = rf"(?:^|[^A-Za-z0-9_-]){re.escape(flag)}(?:$|[^A-Za-z0-9_-])"
+        if not re.search(pattern, combined):
+            missing.append(flag)
+    if missing:
+        return CheckResult(
+            name, "FAIL",
+            f"flags not found in --help output: {', '.join(missing)}",
+        )
+    return CheckResult(
+        name, "PASS",
+        f"all {len(required_flags)} flag(s) present: {', '.join(required_flags)}",
+    )
+
+
+def _check_tool_flags_samtools_mpileup() -> CheckResult:
+    """Verify samtools mpileup accepts -B, -q, -Q, -R, -f, -l (the flags
+    pileup-aadr's Stage 3 actually uses). Issue #2 motivation: `mpileup -@`
+    was rejected silently for two releases."""
+    return _probe_help_for_flags(
+        name="samtools mpileup flag probe",
+        invocation=["samtools", "mpileup", "--help"],
+        required_flags=("-B", "-q", "-Q", "-R", "-f", "-l"),
+    )
+
+
+def _check_tool_flags_pileupcaller() -> CheckResult:
+    """Verify pileupCaller accepts the flags Stage 3 uses."""
+    return _probe_help_for_flags(
+        name="pileupCaller flag probe",
+        invocation=["pileupCaller", "--help"],
+        required_flags=(
+            "--randomDiploid", "--seed", "--sampleNames",
+            "--samplePopName", "-e",
+        ),
+    )
+
+
+def _check_tool_flags_mosdepth() -> CheckResult:
+    """Verify mosdepth accepts the flags `coverage` subcommand uses."""
+    return _probe_help_for_flags(
+        name="mosdepth flag probe",
+        invocation=["mosdepth", "--help"],
+        required_flags=("--threads", "--no-per-base", "--quantize", "--by"),
+    )
+
+
+def _check_tool_flags_picard_liftover() -> CheckResult:
+    """Verify Picard LiftoverVcf accepts the flags Stage 1 uses.
+
+    Picard subcommand flag probing requires the JAR + java; if either is
+    unresolvable, the check FAILs with a pointer at the missing dependency.
+    """
+    import shutil
+
+    from .tool_wrapper import _resolve_picard_jar
+
+    if shutil.which("java") is None:
+        return CheckResult(
+            "picard LiftoverVcf flag probe", "FAIL",
+            "java not on PATH (needed to invoke picard.jar)",
+        )
+    try:
+        jar = _resolve_picard_jar()
+    except PileupAadrError as e:
+        return CheckResult("picard LiftoverVcf flag probe", "FAIL", e.why)
+
+    return _probe_help_for_flags(
+        name="picard LiftoverVcf flag probe",
+        invocation=["java", "-jar", str(jar), "LiftoverVcf", "--help"],
+        required_flags=(
+            "--INPUT", "--OUTPUT", "--CHAIN", "--REFERENCE_SEQUENCE",
+            "--REJECT", "--RECOVER_SWAPPED_REF_ALT",
+            "--MAX_RECORDS_IN_RAM",
+        ),
+        timeout=30.0,  # Picard JVM startup is slow
+    )
 
 
 def _check_tool(spec: ToolSpec) -> CheckResult:

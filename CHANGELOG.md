@@ -7,6 +7,31 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added (v0.2 in progress)
+- **chr20-as-anchor fallback for build detection** (customer issue #1
+  follow-up suggestion). When chr1 is absent from the BAM `@SQ` headers
+  or AADR `.snp` (e.g., chrY-only haplogroup workflows or a chr-by-chr
+  AADR slice), `detect_bam_build` and `detect_aadr_build` now fall back
+  to chr20 (hg19=63,025,520 / hg38=64,444,167; the wider 1.4 Mb gap
+  disambiguates cleanly via the same closest-match logic). Diagnostic
+  on total failure names BOTH anchors so the user sees what was tried.
+  6 new tests in `test_format_detect.py` covering both anchors × both
+  builds + the no-anchor failure path.
+- **`validate` flag-probe checks** (customer issue #2 follow-up
+  suggestion). New checks run each tool's `--help` and grep the output
+  for the specific flags pileup-aadr will use:
+    - `samtools mpileup`: `-B`, `-q`, `-Q`, `-R`, `-f`, `-l`
+    - `pileupCaller`: `--randomDiploid`, `--seed`, `--sampleNames`,
+      `--samplePopName`, `-e`
+    - `mosdepth`: `--threads`, `--no-per-base`, `--quantize`, `--by`
+    - `picard.jar LiftoverVcf` (skipped on no-lift fast path):
+      `--INPUT`, `--OUTPUT`, `--CHAIN`, `--REFERENCE_SEQUENCE`,
+      `--REJECT`, `--RECOVER_SWAPPED_REF_ALT`, `--MAX_RECORDS_IN_RAM`
+  Catches the bug class where samtools/Picard rename or drop a flag in
+  a new release. Word-boundary matching (so `-q` doesn't false-pass on
+  `-quiet`). Missing binary or hung subprocess fails cleanly with a
+  clear message rather than a traceback. 4 new unit tests in
+  `test_validate_cmd.py` covering the pass path, missing-flag failure,
+  word-boundary discipline, missing-binary failure.
 - **LLD #19 full-chain f2 equivalence test.** Two layers gated on AT2 fork
   (`carstenerickson/admixtools@production/v1.0`) + pgen-samplebind:
     - **Layer A** (always runs when toolchain present, ~5s): loads a

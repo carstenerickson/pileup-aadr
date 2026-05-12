@@ -211,3 +211,67 @@ def test_detect_bam_build_unknown_assembly_raises(tmp_path: Path) -> None:
     bam = _make_bam_with_chr1_length(tmp_path / "t2t.bam", 200_000_000)
     with pytest.raises(UnsupportedReferenceBuild, match=r"neither hg19 .*nor hg38"):
         detect_bam_build(bam, override="auto")
+
+
+# --- chr20 fallback (v0.2 enhancement; customer-suggested) ---
+
+
+def _make_bam_with_chr20_only(path: Path, chr20_length: int) -> Path:
+    """A BAM @SQ with chr20 but no chr1 — exercises the fallback path."""
+    import pysam
+    header = {
+        "HD": {"VN": "1.6"},
+        "SQ": [{"SN": "chr20", "LN": chr20_length}],
+    }
+    with pysam.AlignmentFile(str(path), "wb", header=header):
+        pass
+    return path
+
+
+def test_detect_bam_build_chr20_fallback_hg19(tmp_path: Path) -> None:
+    """When chr1 is absent, fall back to chr20. hg19 chr20 = 63,025,520."""
+    bam = _make_bam_with_chr20_only(tmp_path / "hg19_chr20.bam", 63_025_520)
+    assert detect_bam_build(bam, override="auto") == "hg19"
+
+
+def test_detect_bam_build_chr20_fallback_hg38(tmp_path: Path) -> None:
+    """When chr1 is absent, fall back to chr20. hg38 chr20 = 64,444,167."""
+    bam = _make_bam_with_chr20_only(tmp_path / "hg38_chr20.bam", 64_444_167)
+    assert detect_bam_build(bam, override="auto") == "hg38"
+
+
+def test_detect_bam_build_no_chr1_no_chr20_raises(tmp_path: Path) -> None:
+    """BAM with only chrY (or any non-chr1/chr20 chrom) — raises with diagnostic."""
+    import pysam
+    bam = tmp_path / "chrY_only.bam"
+    header = {"HD": {"VN": "1.6"}, "SQ": [{"SN": "chrY", "LN": 57_227_415}]}
+    with pysam.AlignmentFile(str(bam), "wb", header=header):
+        pass
+    with pytest.raises(UnsupportedReferenceBuild, match=r"chr1.*nor chr20"):
+        detect_bam_build(bam, override="auto")
+
+
+def test_detect_aadr_build_chr20_fallback_hg19(tmp_path: Path) -> None:
+    """When AADR has no chr1 rows, fall back to chr20. hg19 chr20 ≈ 63.0 Mb."""
+    snp = tmp_path / "hg19_chr20.snp"
+    snp.write_text("rs1 20 0.0 62900000 A G\n")  # within 5 Mb of hg19 chr20 end
+    df = parse_aadr_snp(snp)
+    assert detect_aadr_build(df, override="auto") == "hg19"
+
+
+def test_detect_aadr_build_chr20_fallback_hg38(tmp_path: Path) -> None:
+    """When AADR has no chr1 rows, fall back to chr20. hg38 chr20 ≈ 64.4 Mb."""
+    snp = tmp_path / "hg38_chr20.snp"
+    snp.write_text("rs1 20 0.0 64400000 A G\n")  # within 5 Mb of hg38 chr20 end
+    df = parse_aadr_snp(snp)
+    assert detect_aadr_build(df, override="auto") == "hg38"
+
+
+def test_detect_aadr_build_no_chr1_no_chr20_raises(tmp_path: Path) -> None:
+    """AADR slice with only chr22 (e.g., the existing chr22 fixture) — diagnostic
+    names BOTH anchors (chr1 + chr20) so users can see what was tried."""
+    snp = tmp_path / "chr22_only.snp"
+    snp.write_text("rs1 22 0.0 51000000 A G\n")
+    df = parse_aadr_snp(snp)
+    with pytest.raises(UnsupportedAADRBuild, match=r"chr1.*OR chr20"):
+        detect_aadr_build(df, override="auto")
