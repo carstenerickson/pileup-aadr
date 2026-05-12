@@ -6,6 +6,34 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added (Day 7 — 2026-05-12)
+- `pileup_aadr/coverage_impl.py` — Stage 0 diagnostic: wraps mosdepth
+  with `--no-per-base --quantize 0:1:5:10:30 [--by REGIONS]` and parses
+  `<prefix>.mosdepth.summary.txt` into `{per_chrom: {chrom: {length,
+  bases, mean_coverage}}}`. Used to triage "BAM low-coverage globally"
+  vs "BAM fine but AADR-1240k positions specifically lack coverage".
+- `pileup_aadr/coverage_cmd.py` — click decorator: `BAM` positional,
+  `--regions`/`--threads`/`--quantize`/`--json` options. Default TSV
+  output; `--json` produces structured stdout for downstream tooling.
+- `pileup_aadr/types.CoverageCliArgs` — frozen dataclass mirroring the
+  click options 1:1 (4 fields + `bam`).
+- `pileup_aadr/cli.py` — registers `coverage` on the root group.
+  Removed the "Day 6-7 deferred" placeholder.
+- `.github/workflows/ci.yml` — CI matrix: 6 cells (Python 3.11/3.12/
+  3.13 × ubuntu-latest/macos-latest), `pip install -e '.[dev]'` then
+  pytest. Separate `lint` job runs `ruff check` (strict) and `mypy`
+  (informational — pandas-stubs gaps are not blocking until upstream
+  stub coverage improves). Concurrency group cancels in-flight runs
+  on superseded pushes.
+
+### Tests added (Day 7; 208 total now)
+- `test_coverage.py` — 6 tests: `_parse_mosdepth_summary` round-trips
+  per-chrom dict; defensive skip on truncated rows; mocked-mosdepth
+  TSV output round-trip; `--json` mode emits the same dict serialized;
+  CLI root help lists `coverage`; `coverage --help` lists --regions/
+  --threads/--json. Mosdepth itself is not required in the test env
+  (ToolWrapper._resolve_binary is monkeypatched).
+
 ### Added (Day 6 — 2026-05-12)
 - `pileup_aadr/types.py` — `ExtractCliArgs` frozen dataclass mirroring
   the `extract` subcommand's ~30 click options 1:1. Constructed via

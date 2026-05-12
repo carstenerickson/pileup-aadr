@@ -15,14 +15,12 @@ import traceback
 import click
 
 from . import __version__
+from .coverage_cmd import coverage
 from .errors import PileupAadrError, format_error
 from .extract_cmd import extract
 from .inspect_cmd import inspect
 from .logging_config import configure_logging
 from .validate_cmd import validate
-
-# `coverage` subcommand deferred to Days 6-7 per the project plan; placeholder click stub
-# kept off the root group until then.
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -47,6 +45,7 @@ def cli(ctx: click.Context, verbose: bool, quiet: bool) -> None:
 
 cli.add_command(extract)
 cli.add_command(validate)
+cli.add_command(coverage)
 cli.add_command(inspect)
 
 

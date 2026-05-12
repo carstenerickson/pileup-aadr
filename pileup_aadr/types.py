@@ -64,4 +64,15 @@ class ExtractCliArgs:
     clean_tempdir_on_crash: bool = False
 
 
-__all__ = ["ExtractCliArgs"]
+@dataclass(frozen=True)
+class CoverageCliArgs:
+    """Frozen view of the `coverage` subcommand's CLI args."""
+
+    bam: Path
+    regions: Path | None = None
+    threads: int = 4
+    quantize: str = "0:1:5:10:30"
+    json_output: bool = False
+
+
+__all__ = ["CoverageCliArgs", "ExtractCliArgs"]
