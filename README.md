@@ -4,7 +4,7 @@
 
 A focused tool that takes a user's WGS BAM (hg19 or hg38) plus an AADR `.snp` file and emits coverage-matched pseudohaploid genotypes in EIGENSTRAT format, ready for sample-binding via [pgen-samplebind](https://github.com/carstenerickson/pgen-samplebind). Replaces the 5-step Picard-liftover + sites-VCF-roundtrip + pileupCaller + rsID-rejoin dance that every ancient-DNA personal-WGS pipeline currently reimplements.
 
-**Status: alpha, in active development.** Day 1 of 15 of the v0.1.0 implementation. See [Project plan](#project-plan) below.
+**Status: alpha (v0.1 surface complete).** All four subcommands functional; 208 unit + integration tests passing on a 6-cell CI matrix (Python 3.11/3.12/3.13 × Linux/macOS).
 
 ## Why it exists
 
@@ -18,64 +18,152 @@ The ancient-DNA community has converged on AADR's 1240k SNP capture panel + EIGE
 
 The procedure is documented in scattered methodology notes; execution is error-prone (~99% liftover yield is required; lower numbers indicate chain or reference-FASTA mismatch); coverage reporting is ad-hoc. Failure modes ("only 39% of HO sites lifted cleanly" via the gVCF-lift dead-end) are tribal knowledge.
 
-`pileup-aadr` is a single-purpose tool wrap of these 5 steps with proper instrumentation + validation, removing the most failure-prone manual step in any ancient-DNA pipeline.
+`pileup-aadr` wraps these 5 steps with proper instrumentation + validation, removing the most failure-prone manual step in any ancient-DNA pipeline.
+
+## Install
+
+```bash
+pip install -e ".[dev]"
+```
+
+External binaries needed by `extract`:
+
+| Tool          | Min version | Required for                                    |
+|---------------|-------------|--------------------------------------------------|
+| `samtools`    | ≥ 1.16      | always (Stage 3 mpileup)                         |
+| `pileupCaller`| ≥ 1.6.0     | always (Stage 3 randomDiploid caller)           |
+| `picard`      | ≥ 3.0       | only when AADR build ≠ BAM build (Stage 1 lift)  |
+| `java`        | ≥ 11        | transitive Picard requirement                    |
+| `mosdepth`    | ≥ 0.3.6     | only `coverage` subcommand                       |
+
+Easiest install: `conda install -c bioconda samtools pileupcaller picard mosdepth`. The UCSC `hg19ToHg38.over.chain.gz` (~223 KB) is bundled with the package and SHA-verified at startup — no separate download needed.
+
+## Quickstart
+
+```bash
+# Sanity-check inputs before a 30-min run
+pileup-aadr validate /data/sample.bam /data/aadr_v66.snp
+
+# Inspect an AADR panel (panel-size guess, allele distribution, palindrome %)
+pileup-aadr inspect /data/aadr_v66.snp
+
+# The main pipeline: BAM + AADR .snp → EIGENSTRAT triplet
+pileup-aadr extract /data/sample.bam /data/aadr_v66.snp \
+    -o /data/sample_pseudohaploid \
+    --report-json /data/sample.report.json
+
+# When the coverage gate fails, triage with mosdepth
+pileup-aadr coverage /data/sample.bam --json
+```
+
+The `extract` subcommand writes 4 output files at the prefix:
+
+| File                         | Format                          | Purpose                                                                    |
+|------------------------------|---------------------------------|----------------------------------------------------------------------------|
+| `<prefix>.geno`              | EIGENSTRAT 1-char-per-line      | per-variant pseudohaploid dosage (0/1/2/9)                                  |
+| `<prefix>.snp`               | EIGENSTRAT 6-col TSV            | AADR rsID + hg19 chrom + Morgans + pos + REF + ALT                         |
+| `<prefix>.ind`               | EIGENSTRAT 3-col TSV            | sample IID + SEX + POP                                                      |
+| `<prefix>.pseudohaploid.json`| schema-versioned JSON           | provenance sidecar (consumed by `pgen-samplebind`'s sidecar reader)        |
 
 ## Subcommands
 
 ```
 pileup-aadr extract  BAM AADR_SNP -o PREFIX [...]   the canonical 4-stage pipeline
-pileup-aadr validate BAM AADR_SNP                   pre-flight check (no mpileup/pileupCaller)
+pileup-aadr validate BAM AADR_SNP                   pre-flight check (no mpileup)
 pileup-aadr coverage BAM [--regions BED]            per-chrom coverage report (mosdepth)
-pileup-aadr inspect  AADR_SNP                       structured summary of an AADR .snp panel
+pileup-aadr inspect  AADR_SNP                       structured AADR .snp summary
 ```
 
-## Install (alpha)
+Run `pileup-aadr <cmd> --help` for the full option list. Notable `extract` options:
 
-```bash
-pip install -e ".[dev]"   # editable install with dev deps
-```
+- **Build detection**: `--bam-build` / `--aadr-build` override the auto-detection
+- **Output control**: `--sample-name`, `--pop`, `--sex`, `--overwrite`
+- **Liftover tuning**: `--chain`, `--ref-fasta`, `--picard-mem` (default 3g), `--strict-chain-sha`
+- **Filtering**: `--keep-palindromes`, `--keep-alt-contigs` (rarely useful; defaults are right)
+- **Pileup**: `--threads`, `--min-mapq`, `--min-baseq`, `--enable-baq`, `--seed`
+- **Gates**: `--liftover-yield-fail-pct` (default 70), `--min-coverage` (default 500k)
+- **Reporting**: `--report-json`, `--report-tsv`
+- **Tempdir**: `--tempdir`, `--keep-tempdir`, `--clean-tempdir-on-crash`
 
-External binaries needed by `extract`:
-- `samtools` ≥ 1.16
-- `pileupCaller` ≥ 1.6.0
-- `picard` ≥ 3.0 (only when AADR build ≠ BAM build; not needed for hg19-native fast path)
-- `java` ≥ 11 (transitive Picard requirement)
+## Configuration
 
-For `coverage` subcommand:
-- `mosdepth` ≥ 0.3.6
+Two environment variables let you point at a shared site-wide install of the chain + reference FASTAs:
 
-Easiest install (most CI matrices): `conda install -c bioconda samtools pileupcaller picard mosdepth`.
+| Env var                    | Effect                                                                |
+|----------------------------|------------------------------------------------------------------------|
+| `PILEUP_AADR_CHAIN_DIR`    | Directory containing `hg19ToHg38.over.chain.gz` (overrides bundled)   |
+| `PILEUP_AADR_REF_DIR`      | Directory containing `<build>.fa` (e.g., `hg38.fa` + `hg38.fa.fai`)   |
+| `PILEUP_AADR_JSON_LOGS=1`  | Switch stderr logging from human-readable to JSON Lines                |
+
+Resolution order for `--chain` / `--ref-fasta`: explicit CLI flag → env var → bundled (chain) or BAM @PG (FASTA). Pre-flight verifies the FASTA's chr1 length matches the BAM's build before Picard burns 30+ seconds rejecting most sites with `MismatchedRefAllele`.
+
+## Exit codes
+
+Stable across versions for workflow-manager integration:
+
+| Code | Meaning                                                                 |
+|------|--------------------------------------------------------------------------|
+| 0    | Success (possibly with `WARN`-level gate flags)                          |
+| 1    | Soft-validation failure: liftover yield gate, coverage gate              |
+| 2    | I/O failure: chain/FASTA/BAM not found, subprocess crashed, lock held    |
+| 3    | Invariant violation: build mismatch, AADR malformed, defensive sanity   |
+| 4    | Usage error: bad CLI args, missing/wrong-version external binary         |
 
 ## Design
 
-This repo implements a frozen high-level + low-level design (kept in private notes).
+The 4-stage pipeline:
+
+```
+AADR .snp (hg19)              user BAM (hg19 or hg38)
+       │                            │
+       │ Stage 1: Picard LiftoverVcf RECOVER_SWAPPED_REF_ALT
+       │ (skipped when BAM build == AADR build)
+       ▼
+   lifted VCF + SwappedAlleles INFO flags
+       │
+       │ Stage 2: alt-contig filter + pileupCaller .snp + BED
+       ▼
+   .snp + BED in target build
+       │
+       │ Stage 3: samtools mpileup | pileupCaller --randomDiploid
+       │ (~25-40 min on a 33× WGS at 1240k)
+       ▼
+   pileupCaller EIGENSTRAT triplet (target build)
+       │
+       │ Stage 4: rejoin to AADR's hg19 frame by rsID
+       │          + invert dosage at SwappedAlleles flag
+       ▼
+   final EIGENSTRAT triplet + PSEUDOHAPLOID sidecar
+```
+
 Key invariants the implementation honors:
 
-- **4-stage extract pipeline** mirroring the methodology's Step 1.4–1.7 (lift → transform → call → rejoin)
-- **Picard 3.3.0+ LiftoverVcf** with `RECOVER_SWAPPED_REF_ALT=true` + `SwappedAlleles` INFO flag for Stage 4 dosage inversion
-- **Bundled UCSC chain** (~223 KB; SHA-verified at startup)
-- **`<prefix>.pseudohaploid.json` sidecar** for authoritative provenance (consumed by `pgen-samplebind`'s sidecar reader; see [pgen-samplebind#2](https://github.com/carstenerickson/pgen-samplebind/issues/2))
+- **Picard 3.3.0+ LiftoverVcf** with `RECOVER_SWAPPED_REF_ALT=true` + `SwappedAlleles` INFO flag for Stage 4 dosage inversion (the safe, modern path; the gVCF-lift route fails at chain-boundary straddling)
+- **Bundled UCSC chain** (~223 KB; SHA-verified at startup; reinstall the wheel if the SHA mismatches)
+- **Single-BAM `--randomDiploid` is pseudohaploid by construction** — recorded in the `<prefix>.pseudohaploid.json` sidecar for downstream tooling
+- **No-lift fast path** when BAM build matches AADR build (saves Picard + transform + rejoin; pileupCaller's output IS the AADR-frame triplet)
 - **Stable exit codes** (0/1/2/3/4) for workflow-manager integration
+- **Streaming Stage-4 writes** — 1.2M-site EIGENSTRAT triplet emitted at constant memory
 
-CHANGELOG entries summarize the per-day implementation progress + reference the
-relevant design constraints inline.
+## Integration with ancestry-pipeline-tool
 
-## Project plan (v0.1.0)
+`pileup-aadr extract --report-json <path>` produces a schema-versioned JSON consumed by ancestry-pipeline-tool's gate node. The schema (v1) places per-stage `ExtractCounters` fields at the top level alongside `tool`, `input`, `output`, `gates`, and `config` blocks; the no-lift fast path serializes Stages 1/2/4 as `null` so consumers can branch cleanly.
 
-3 weeks; 15 working days.
-
-**Week 1**: skeleton + format detection + Stage 1 (Picard lift) + Stage 2 (transform) + Stage 3 (mpileup|pileupCaller pipe) + Stage 4 (rsID rejoin) + correctness invariants.
-
-**Week 2**: hg19-native fast path + ancestry-pipeline-tool integration (stdout/stderr discipline, exit-code map, JSON schema) + pgen-samplebind composition test + robustness regression + concurrency.
-
-**Week 3**: packaging + self-dogfood + external feedback iteration + v0.1.0 tag.
-
-CHANGELOG tracks day-by-day progress.
+The `<prefix>.pseudohaploid.json` sidecar is read by `pgen-samplebind` via [pgen-samplebind#2](https://github.com/carstenerickson/pgen-samplebind/issues/2) — `pseudohaploid=1` + `het_count` + `het_rate` flow through to the sample-bind step without re-derivation.
 
 ## Status
 
-- Design: frozen, all readiness items closed (sidecar integration confirmed via [pgen-samplebind#2](https://github.com/carstenerickson/pgen-samplebind/issues/2))
-- Implementation: Day 1 in progress
+| Surface           | State                                                       |
+|-------------------|-------------------------------------------------------------|
+| Design            | Frozen (HLD + LLD reconciled; all readiness items closed)   |
+| `extract`         | Functional end-to-end (lift + no-lift fast path)            |
+| `validate`        | Functional (10-check pre-flight)                            |
+| `coverage`        | Functional (mosdepth wrapper)                               |
+| `inspect`         | Functional (pure-Python AADR `.snp` summary)                |
+| Tests             | 208 passing across 6-cell matrix; ruff-clean                |
+| First tag         | Pending real-binary smoke test against captured baselines   |
+
+CHANGELOG tracks the day-by-day implementation progress with design-constraint references.
 
 ## License
 
