@@ -52,14 +52,16 @@ jobs:
         # Defensive: pileup-aadr crashes at startup with ChainFileSHAError if
         # the bundled hg19ToHg38.over.chain.gz isn't packaged. Catch a broken
         # package-data setting BEFORE publishing rather than at user-install.
+        # Note: `python -m zipfile -l` emits 3 cols (filename / date / size)
+        # so the filename is in the first whitespace-separated field, not
+        # at end-of-line.
         shell: bash
         run: |
           set -euo pipefail
           WHEEL=$(ls dist/*.whl)
-          python -m zipfile -l "$WHEEL" \
-            | grep -q "pileup_aadr/data/hg19ToHg38.over.chain.gz$"
-          python -m zipfile -l "$WHEEL" \
-            | grep -q "pileup_aadr/data/hg19ToHg38.over.chain.gz.sha256$"
+          NAMES=$(python -m zipfile -l "$WHEEL" | awk '{print $1}')
+          echo "$NAMES" | grep -qx "pileup_aadr/data/hg19ToHg38.over.chain.gz"
+          echo "$NAMES" | grep -qx "pileup_aadr/data/hg19ToHg38.over.chain.gz.sha256"
 
       - name: Upload distribution artifacts
         uses: actions/upload-artifact@v4
