@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "samples": {
+    "GFX0442453": {
+      "pseudohaploid": 1,
+      "het_count": 2286,
+      "non_missing_autosomal_count": 16170,
+      "het_rate": 0.14137291280148423,
+      "source": "pileup-aadr-extract",
+      "calling_mode": "randomDiploid",
+      "note": "single-BAM --randomDiploid output is pseudohaploid by construction"
+    }
+  }
+}

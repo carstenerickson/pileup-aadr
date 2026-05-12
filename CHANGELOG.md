@@ -6,6 +6,53 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added (v0.2 in progress)
+- **LLD #19 full-chain f2 equivalence test.** Two layers gated on AT2 fork
+  (`carstenerickson/admixtools@production/v1.0`) + pgen-samplebind:
+    - **Layer A** (always runs when toolchain present, ~5s): loads a
+      pre-extracted pileup-aadr triplet from `tests/integration/fixtures/
+      lld19/pileup_aadr_output/`, merges with the AADR chr22 5-pop
+      reference subset via `pgen-samplebind merge`, runs AT2 `extract_f2`
+      on the merged PFILE, asserts the f2 array matches the frozen
+      `f2_baseline.rds` within `max_dev < 1e-9`.
+    - **Layer B** (gated on `PILEUP_AADR_LLD19_BAM` + `_REF` env vars,
+      ~30s): full chain BAM → pileup-aadr extract → samplebind merge →
+      AT2 extract_f2 → diff baseline. Catches drift in pileup-aadr
+      itself.
+- `tests/integration/fixtures/lld19/` — 1.8 MB committed fixtures: AADR
+  chr22 5-pop subset (Loschbour, Stuttgart, MA1, Denisova, Altai
+  Neanderthal; ~16K SNPs × 11 samples), a frozen pileup-aadr extract
+  output for layer A, the 6×6×13 f2 baseline `.rds`, and the original
+  extract `--report-json` for provenance. README documents the panel
+  composition + sources.
+- `scripts/regen_lld19_baseline.sh` — end-to-end script regenerating
+  every fixture from a clean toolchain (AADR PUB → 5-pop subset → BAM
+  subset → pileup-aadr extract → pgen-samplebind merge → AT2
+  extract_f2). For when pileup-aadr's pipeline legitimately moves the
+  numbers (new Stage-4 invariant, etc.).
+- `tests/test_extract_cmd.py` — 3 click-layer contract tests:
+  default-no-flag-disables-mpileup-BAQ, --enable-baq-enables-it,
+  CLI-default-equals-dataclass-default. Catches the BAQ-flip class of
+  bug surfaced below.
+
+### Fixed (v0.2 in progress)
+- **CLI `--enable-baq` flip was inverted.** v0.1.0-0.1.2's
+  `extract_cmd.extract` did `kwargs["no_baq"] = not enable_baq`, which
+  produced **BAQ-ENABLED** mpileup as the default — the opposite of
+  HLD §"CLI reference > pileup / call" which specifies "default: -B is
+  passed, disabling samtools BAQ to match pileupCaller's recommended
+  cmdline". The dataclass default `no_baq=False` was correct, so direct
+  programmatic instantiation produced the right behavior — but
+  `pileup-aadr extract` from the CLI without `--enable-baq` produced a
+  different `.geno` than `run_extract(ExtractCliArgs(...))` would. This
+  divergence is what broke LLD #19 layer-B at first run. Fix:
+  `kwargs["no_baq"] = enable_baq` (pass-through, not negation).
+  Regression tests in `test_extract_cmd.py`.
+- README documents the local-test toolchain setup
+  (`PICARD_JAR=`, `openjdk` on PATH, `pgen-samplebind`'s venv on PATH,
+  AT2 fork install) for running `tests/integration/` locally rather
+  than only on CI's bio-tools job.
+
 ## [0.1.2] — 2026-05-12
 
 Two real bug fixes from the pipeline customer.

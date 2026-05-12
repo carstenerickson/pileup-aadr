@@ -206,10 +206,18 @@ def extract(ctx: click.Context, **kwargs: Any) -> None:
 
     For hg19-native BAMs, Stages 1/2/4 are skipped (no-lift fast path).
     """
-    # CLI flips --enable-baq -> no_baq=False at the click layer (the dataclass
-    # field is no_baq because that's how downstream stages express it).
+    # CLI -> orchestrator BAQ flag mapping. The variable name `no_baq` is
+    # awkwardly inverted (from the orchestrator's perspective): the value
+    # `no_baq=True` means "DON'T pass `-B` to mpileup" — which actually
+    # ENABLES samtools BAQ recalibration (-B is the disable-BAQ flag). So:
+    #   --enable-baq passed (samtools BAQ wanted)  -> no_baq=True
+    #   --enable-baq omitted (default; -B passed)  -> no_baq=False
+    # The previous `not enable_baq` mapping was inverted: CLI default produced
+    # BAQ-enabled mpileup (wrong vs HLD §"CLI reference > pileup / call" which
+    # specifies "default: -B is passed, disabling samtools BAQ to match
+    # pileupCaller's recommended cmdline"). Caught by LLD #19 layer-B.
     enable_baq = kwargs.pop("enable_baq", False)
-    kwargs["no_baq"] = not enable_baq
+    kwargs["no_baq"] = enable_baq
     args = ExtractCliArgs(**kwargs)
     exit_code = run_extract(args)
     ctx.exit(exit_code)
