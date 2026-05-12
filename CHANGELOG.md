@@ -6,6 +6,20 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0] — 2026-05-12
+
+First tagged release. Surface complete: 4 subcommands (`extract`,
+`validate`, `coverage`, `inspect`) functional end-to-end; 209 unit +
+integration tests passing on a 6-cell CI matrix (Python 3.11/3.12/3.13
+× ubuntu-latest/macos-latest); ruff clean. Real-binary smoke test on
+GCP n2-standard-16 verified the v2.1 captured baselines (Picard 3.1.1
++ samtools 1.23.1 + pileupCaller 1.6.0.0 against a 5000-site AADR
+slice + hg38 BAM): 4965/4967 lifted (99.96% yield, 16 SwappedAlleles,
+2 NoTarget) in 13.6s wallclock; the load-bearing
+`Stage1.swapped_alleles_count == Stage4.ref_alt_swap_count` invariant
+holds. See per-day Added/Fixed sections below for the per-stage
+implementation history.
+
 ### Fixed (Day 8 smoke test — 2026-05-12)
 Three real bugs surfaced by running the full pipeline end-to-end against
 real Picard 3.1.1 / samtools 1.23.1 / pileupCaller 1.6.0.0 / hg38 FASTA on
