@@ -6,6 +6,23 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-05-12
+
+Beta promotion. Six of the seven v0.2 items from the post-v0.1
+reconciliation review landed; the seventh (region-parallel mpileup
+fan-out) is the largest single item and rolls forward to v0.3 along
+with any other Stage-3 wallclock improvements that profiling surfaces.
+The headline change vs v0.1: pileup-aadr is now genuinely panel-
+agnostic — HumanOrigins, chrY-only haplogroup, chrM-only mtDNA, and
+arbitrary custom EIGENSTRAT panels all work end-to-end without
+crashing on the 1240k-specific autosomal coverage gate. The HLD
+spec'd LLD-#19 full-chain f2 equivalence test is also wired (closes
+"verified equivalent to mergeit's pipeline").
+
+249 tests passing across the 6-cell + bio-tools CI matrix; ruff
+clean. See per-day Added/Fixed sections below for the full v0.2
+implementation history.
+
 ### Added (v0.2 in progress)
 - **Panel classification + non-autosomal coverage-gate skip** (HLD §"Out-of-
   scope reachable extensions": HO panel + chrY-only + chrM-only + custom
