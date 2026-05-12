@@ -1,16 +1,18 @@
-"""`extract` subcommand — click decorator stub for Day 1.
+"""`extract` subcommand — thin click wrapper that delegates to `run_extract`.
 
-The full orchestrator (`run_extract` in `extract_orch.py`) and its 4-stage pipeline
-land on Days 3-5 per the project plan (HLD §"Project plan"). For Day 1, this module
-just exposes the click command surface so `pileup-aadr extract --help` works and the
-CLI tree is wired up. Invoking `extract` raises `NotImplementedError` with a clear
-message pointing at the project-plan day.
+The click decorator collects ~30 options into a kwargs dict that maps directly
+into `ExtractCliArgs`. The orchestrator (`extract_orch.run_extract`) does the
+real work.
 """
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import click
+
+from .extract_orch import run_extract
+from .types import ExtractCliArgs
 
 
 @click.command()
@@ -30,7 +32,7 @@ import click
     "--sample-name",
     type=str,
     default=None,
-    help="Sample IID in output .ind (default: BAM @RG SM: → filename stem)",
+    help="Sample IID in output .ind (default: BAM @RG SM: -> filename stem)",
 )
 @click.option(
     "--pop",
@@ -190,24 +192,24 @@ import click
     help="Clean tempdir even on crash (for ephemeral CI/container environments)",
 )
 @click.pass_context
-def extract(ctx: click.Context, **kwargs: object) -> None:
+def extract(ctx: click.Context, **kwargs: Any) -> None:
     """Extract pseudohaploid genotypes at AADR sites from a BAM/CRAM.
 
     BAM       Aligned BAM/CRAM (hg19 or hg38, auto-detected from @SQ)
     AADR_SNP  AADR .snp file (hg19 coordinates through v66)
 
     The 4-stage pipeline:
-      1. Lift AADR sites hg19 → hg38 via Picard LiftoverVcf RECOVER_SWAPPED_REF_ALT
-      2. Transform lifted VCF → pileupCaller .snp + BED (with alt-contig filter)
+      1. Lift AADR sites hg19 -> hg38 via Picard LiftoverVcf RECOVER_SWAPPED_REF_ALT
+      2. Transform lifted VCF -> pileupCaller .snp + BED (with alt-contig filter)
       3. samtools mpileup | pileupCaller --randomDiploid
       4. Rejoin hg19 coordinates by rsID + invert dosage at SwappedAlleles
 
     For hg19-native BAMs, Stages 1/2/4 are skipped (no-lift fast path).
-
-    Status (Day 1 — 2026-05-12): orchestrator implementation lands on Days 3-5.
-    Today this command is a stub that just validates CLI parsing.
     """
-    raise NotImplementedError(
-        "extract orchestrator lands on Days 3-5 of the project plan. "
-        "Today (Day 1): only `pileup-aadr inspect` and `pileup-aadr validate` are functional."
-    )
+    # CLI flips --enable-baq -> no_baq=False at the click layer (the dataclass
+    # field is no_baq because that's how downstream stages express it).
+    enable_baq = kwargs.pop("enable_baq", False)
+    kwargs["no_baq"] = not enable_baq
+    args = ExtractCliArgs(**kwargs)
+    exit_code = run_extract(args)
+    ctx.exit(exit_code)

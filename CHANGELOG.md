@@ -6,6 +6,69 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added (Day 6 — 2026-05-12)
+- `pileup_aadr/types.py` — `ExtractCliArgs` frozen dataclass mirroring
+  the `extract` subcommand's ~30 click options 1:1. Constructed via
+  `ExtractCliArgs(**click_kwargs)` from the click decorator.
+- `pileup_aadr/concurrency.py` — two context managers + helpers:
+    - `output_lock(prefix)` — advisory `fcntl.flock` on
+      `<prefix>.lock`. PID written to a SEPARATE `<prefix>.lock.holder`
+      sidecar (H8 fix — releasing the lock no longer truncates the
+      diagnostic the next contender reads). Contention raises
+      `OutputLockHeldError` naming the holder PID.
+    - `tempdir(*, base, keep_always, clean_on_crash)` — per-invocation
+      tempdir with crash-survival semantics. Default: clean on success,
+      retain on crash for forensics. Both directions overridable.
+    - `warn_if_networked_fs(prefix)` — Linux-only stderr WARN when
+      output is on NFS/SMB/CIFS where flock may be no-op'd.
+- `pileup_aadr/output.py` — four writers + schema-version constants:
+    - `write_pseudohaploid_sidecar` — `<prefix>.pseudohaploid.json`
+      (consumed by pgen-samplebind); auto-injects schema_version.
+    - `write_json_report` — schema-1 run summary with `tool` /
+      `input` / per-stage `ExtractCounters` fields at top level (via
+      `dataclasses.asdict`) / `output` / `config` blocks. No-lift
+      fast path serializes Stages 1/2/4 as `null`.
+    - `write_per_variant_tsv` — streaming 6-col TSV; constant memory
+      regardless of variant count.
+    - `write_stdout_summary` — human-readable multi-line block matching
+      HLD §"Stdout summary" exactly: input/Stages 1-4/coverage report
+      with 6-row autosome grid/output paths/wallclock.
+- `pileup_aadr/extract_orch.py` — `run_extract(args)` orchestrator
+  threading the 7-step HLD sequence: pre-flight (format detection +
+  build detection + chain/ref resolution) → tool version probes →
+  no-lift dispatch decision → `output_lock` + `tempdir` context →
+  Stages 1-4 (or just 3 for fast path) → coverage gate evaluation →
+  output writers → cleanup. H6 fix: output-prefix collision check
+  happens INSIDE the locked region. C4 fix: `_run_stages` returns
+  `(counters, rejoin_out)` so the populated sidecar dict + per-variant
+  rows flow directly to `_write_outputs` (no rebuild from counters that
+  loses `het_count`/`het_rate`).
+- `pileup_aadr/extract_cmd.py` — replaced Day-1 NotImplementedError
+  stub with a thin click wrapper that flips `--enable-baq` to the
+  orchestrator's `no_baq=False`, constructs `ExtractCliArgs`, calls
+  `run_extract`, and exits with the returned code.
+
+### Tests added (Day 6; 202 total now)
+- `test_concurrency.py` — 10 tests: lock acquire/release leaves 0-byte
+  lock + removes holder sidecar; parent dir auto-created; real-
+  subprocess contention raises with PID diagnostic; tempdir clean exit
+  removes dir; default crash retention; `keep_always` retains on clean
+  exit; `clean_on_crash` removes on crash; `pileup-aadr-` prefix; non-
+  Linux fs detection returns None; local-FS path emits no NFS warning.
+- `test_output.py` — 9 tests: sidecar JSON round-trip; schema_version
+  injection; parent-dir creation; JSON report has tool block + counters
+  fields at top level + correct values; no-lift JSON has null Stages
+  1/2/4; per-variant TSV header + row count; iterator-based streaming;
+  stdout summary lift-path renders all 4 stages; no-lift summary skips
+  Stages 1/2/4 cleanly.
+- `test_extract_orch.py` — 8 integration tests: end-to-end no-lift
+  fast path writes all 4 artifacts; --report-json populates schema-1
+  with null lift stages; --report-tsv populates 50-site streaming TSV;
+  output-collision raises OutputExistsError; --overwrite replaces
+  existing files; coverage gate failure raises CoverageGateFailure;
+  warn-coverage threshold logs WARNING; full lift path dispatches to
+  Stage 1 (mocked Picard, mocked pileup_call, mocked binary lookup).
+
 ### Added (Day 5 — 2026-05-12)
 - `pileup_aadr/rejoin.py` — Stage 4 + no-lift fast-path finalizer.
   Two entry points share a `RejoinOutput` bundle (Stage4 counters,
