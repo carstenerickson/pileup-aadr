@@ -1,0 +1,95 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pileup-aadr"
+version = "0.1.0.dev0"
+description = "One-shot user-BAM → AADR-site pseudohaploid genotypes for ancient-DNA pipelines"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "Carsten Erickson", email = "carstene@gmail.com"}]
+requires-python = ">=3.11"
+keywords = ["bioinformatics", "ancient-dna", "aadr", "qpadm", "eigenstrat", "pileupcaller"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "click>=8.1,<9",
+    "pandas>=2.0,<3",
+    "pysam>=0.22,<1",
+    "numpy>=1.26,<3",
+    "packaging>=23.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "pytest-mock>=3.12",
+    "mypy>=1.8",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+pileup-aadr = "pileup_aadr.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/carstenerickson/pileup-aadr"
+Repository = "https://github.com/carstenerickson/pileup-aadr"
+Issues = "https://github.com/carstenerickson/pileup-aadr/issues"
+
+[tool.setuptools]
+packages = ["pileup_aadr"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+pileup_aadr = [
+    "data/hg19ToHg38.over.chain.gz",
+    "data/hg19ToHg38.over.chain.gz.sha256",
+]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "slow: marks tests as slow (>10 sec; run with -m slow to include)",
+    "requires_picard: requires Picard binary on PATH",
+    "requires_samtools: requires samtools binary on PATH",
+    "requires_pileupcaller: requires pileupCaller binary on PATH",
+    "requires_mosdepth: requires mosdepth binary on PATH",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "T20", "RUF"]
+# T20 = no print() — matches HLD logging discipline
+ignore = [
+    "E501",   # line length — handled by formatter
+    "N818",   # exception names without Error suffix — HLD §"Error class taxonomy" pins names
+              # like `BAMSampleNameAmbiguous`, `CoverageGateFailure`; renaming would break the
+              # spec contract.
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Test functions naming chrM/chrY use the conventional uppercase chromosome names
+"tests/test_chrom_lengths.py" = ["N802"]
+# errors.py orders __all__ by exit code (1/2/3/4) rather than alphabetically — much
+# more readable for a 25-class taxonomy than sorted output. Same justification for
+# the `Optional` import-style note (we deliberately use Optional for the Stage*Counters
+# fields that the orchestrator replaces).
+"pileup_aadr/errors.py" = ["RUF022"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_ignores = true
