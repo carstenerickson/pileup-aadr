@@ -83,17 +83,20 @@ jobs:
           auto-update-conda: true
           python-version: "3.12"
           channels: bioconda,conda-forge
-          channel-priority: strict
+          channel-priority: flexible
 
-      - name: Install pinned bio tools
-        # Versions match LLD §18 `current` matrix entry (v2.1-verified).
-        # The Picard 3.3.0 conda package is `picard=3.3.0` from bioconda.
+      - name: Install bio tools
+        # Versions are floor-pinned (matches PILEUP_AADR's min_version specs)
+        # rather than exact-pinned to keep conda's solver tractable across
+        # bioconda's evolving package graph. The bio-tools job's purpose is
+        # to catch the smoke-test class of bug — which any compatible
+        # version mix will surface.
         run: |
-          conda install -y -c bioconda \
-            samtools=1.23.1 \
-            sequencetools=1.6.0 \
-            picard=3.3.0 \
-            mosdepth=0.3.6
+          conda install -y -c bioconda -c conda-forge \
+            'samtools>=1.16' \
+            'sequencetools>=1.6.0' \
+            'picard>=3.0' \
+            'mosdepth>=0.3.6'
           # bioconda's `picard` wrapper drops the JAR at $CONDA_PREFIX/share/picard-*/picard.jar
           PICARD_JAR=$(ls "$CONDA_PREFIX"/share/picard-*/picard.jar | head -n1)
           echo "PICARD_JAR=$PICARD_JAR" >> "$GITHUB_ENV"
