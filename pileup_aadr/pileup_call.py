@@ -37,8 +37,11 @@ _PILEUPCALLER_HEADER_RE: Final[re.Pattern[str]] = re.compile(
     r"\s+avgRawReads\s+avgDamageCleanedReads\s+avgSampledFrom",
     re.MULTILINE,
 )
+# Scientific notation is emitted at low coverage (e.g., "3.68e-2") so floats
+# need the full pattern, not just `[\d.]+`. The integer columns stay strict.
+_NUM_RE: Final[str] = r"\d+(?:\.\d+)?(?:[eE][+-]?\d+)?"
 _PILEUPCALLER_DATA_RE: Final[re.Pattern[str]] = re.compile(
-    r"^(\S+)\s+(\d+)\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)$",
+    rf"^(\S+)\s+(\d+)\s+(\d+)\s+({_NUM_RE})\s+({_NUM_RE})\s+({_NUM_RE})\s*$",
     re.MULTILINE,
 )
 

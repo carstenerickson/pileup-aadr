@@ -6,6 +6,35 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed (Day 8 smoke test — 2026-05-12)
+Three real bugs surfaced by running the full pipeline end-to-end against
+real Picard 3.1.1 / samtools 1.23.1 / pileupCaller 1.6.0.0 / hg38 FASTA on
+a 5000-site AADR slice + an hg38 BAM. The mocked-subprocess test suite
+didn't catch any of them; the smoke test was the only path that could.
+
+- `tool_wrapper.PICARD_SPEC.version_args` was `["--version"]`, but
+  `java -jar picard.jar --version` (no subcommand) prints help + exits 1
+  — the version string `Version:X.Y.Z` only appears when `--version`
+  comes AFTER a subcommand. Switched to `["LiftoverVcf", "--version"]`
+  since LiftoverVcf is what we actually invoke. Validate's picard.jar
+  check now PASSes against Picard 3.1.1.
+
+- `tool_wrapper.ToolWrapper.run` crashed with `AttributeError:
+  'CompletedProcess' object has no attribute 'pid'` after every
+  subprocess call. `subprocess.run` returns a CompletedProcess after
+  the child exits — the pid is gone, /proc/<pid> is gone, and
+  per-child VmHWM is unrecoverable from this path. The mocked tests
+  never exercised the real Popen→exit→stat path so the bug never
+  fired. Set `peak_rss_mb=None` in this path with a NOTE referencing
+  the Popen-based pipe path (Stage 3, where the read is still valid).
+
+- `pileup_call._PILEUPCALLER_DATA_RE` used `[\d.]+` for the avg-coverage
+  columns, which doesn't match scientific notation (e.g.,
+  `3.6858006042296075e-2` emitted at low coverage). Switched to a full
+  number regex `\d+(?:\.\d+)?(?:[eE][+-]?\d+)?`. Added a captured
+  `pileupcaller_scientific.stderr` fixture from the smoke test as a
+  regression test.
+
 ### Added (Day 7 — 2026-05-12)
 - `pileup_aadr/coverage_impl.py` — Stage 0 diagnostic: wraps mosdepth
   with `--no-per-base --quantize 0:1:5:10:30 [--by REGIONS]` and parses

@@ -82,7 +82,10 @@ PILEUPCALLER_SPEC = ToolSpec(
 
 PICARD_SPEC = ToolSpec(
     binary="picard.jar",  # JAR path resolved at startup; see resolve_picard_jar()
-    version_args=["--version"],  # `java -jar picard.jar --version` writes to stderr
+    # `java -jar picard.jar --version` (no subcommand) prints help + exits 1.
+    # Version is only printed via a subcommand: `LiftoverVcf --version` -> "Version:3.1.1"
+    # on stderr. We probe via LiftoverVcf since that's the one we'll actually invoke.
+    version_args=["LiftoverVcf", "--version"],
     version_regex=r"Version:(\d+\.\d+(?:\.\d+)?)",  # matches "Version:3.3.0"
     min_version="3.0.0",
     tested_against="3.3.0",
@@ -338,7 +341,14 @@ class ToolWrapper:
                     fix=f"Increase timeout or check for hung subprocess; stderr: {capture_stderr_to}",
                 ) from e
         wallclock = time.perf_counter() - t0
-        peak_rss_mb = _try_get_child_peak_rss(proc.pid)
+        # NOTE: subprocess.run returns CompletedProcess after the child has
+        # already exited; /proc/<pid> is gone, so per-child VmHWM read is
+        # impossible from this path. RSS measurement is best-effort + reserved
+        # for the Popen-based pipe path (Stage 3). v0.1 leaves this None and
+        # users who care about RSS use mosdepth (`coverage` subcommand) or an
+        # external watcher. See _try_get_child_peak_rss for the read used by
+        # the pipe path.
+        peak_rss_mb: float | None = None
 
         result = ToolRunResult(
             exit_code=proc.returncode,

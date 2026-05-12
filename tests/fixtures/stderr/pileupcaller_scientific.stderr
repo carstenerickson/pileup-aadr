@@ -1,0 +1,9 @@
+# Summary Statistics per sample
+# SampleName: Name of the sample as given by the user
+# TotalSites: Total number of sites in the given Snp file (before transition filtering)
+# NonMissingCalls: Total number of sites output with a non-Missing call (before transition filtering)
+# avgRawReads: mean coverage of raw pileup input data across total sites (incl. missing sites)
+# avgDamageCleanedReads: mean coverage of pileup after single-stranded damage removal
+# avgSampledFrom: mean coverage of pileup after removing reads with tri-allelic alleles
+SampleName	TotalSites	NonMissingCalls	avgRawReads	avgDamageCleanedReads	avgSampledFrom
+DANTE_GFX0442453	4965	9	3.6858006042296075e-2	3.6858006042296075e-2	3.6858006042296075e-2

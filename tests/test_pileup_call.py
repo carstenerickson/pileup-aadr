@@ -37,6 +37,17 @@ def test_parse_clean_run() -> None:
     assert summary.avg_sampled_from == 21.4
 
 
+def test_parse_scientific_notation_in_avg_columns() -> None:
+    """Captured low-coverage stderr with avgRawReads in scientific notation
+    (e.g., 3.68e-2) must parse — bug-fix regression for the smoke test on
+    the tiny.bam where coverage was tiny enough to trigger e-notation."""
+    text = (FIXTURES_STDERR / "pileupcaller_scientific.stderr").read_text()
+    summary = parse_pileupcaller_stderr(text)
+    assert summary.total_sites == 4965
+    assert summary.non_missing_calls == 9
+    assert summary.avg_raw_reads == 0.036858006042296075
+
+
 def test_parse_missing_header_raises() -> None:
     """Stderr lacking the SampleName header → PileupAadrInternalError."""
     text = "Some unrelated output without the header.\n"
