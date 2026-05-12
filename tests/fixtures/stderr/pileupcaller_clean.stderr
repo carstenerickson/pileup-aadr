@@ -1,0 +1,15 @@
+SequenceFormatTools.parsePileup: Reading pileup from stdin
+[INFO] Reading SNP file
+[INFO] Read 1131600 SNPs from input file
+[INFO] Starting calling
+
+# Summary Statistics per sample
+# SampleName: name of the sample
+# TotalSites: total number of sites covered by reads
+# NonMissingCalls: number of sites with at least one valid read
+# avgRawReads: average number of raw reads at sites with at least one read
+# avgDamageCleanedReads: average number after damage filtering
+# avgSampledFrom: average number of reads sampled per site
+SampleName	TotalSites	NonMissingCalls	avgRawReads	avgDamageCleanedReads	avgSampledFrom
+Carsten	1131600	1107213	21.4	21.4	21.4
+[INFO] Done.

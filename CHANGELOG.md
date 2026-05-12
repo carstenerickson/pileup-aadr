@@ -6,6 +6,52 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added (Day 4 — 2026-05-12)
+- `pileup_aadr/transform.py` — Stage 2: `build_pileupcaller_snp_and_bed`
+  reads Picard's lifted VCF and emits two artifacts:
+    - **pileupCaller `.snp`** (6-col EIGENSOFT, AADR-numeric chrom in
+      col 2 — chr1-22 → 1-22, chrX → 23, chrY → 24, chrM → 90; AADR
+      rsID preserved from the AADR_RS INFO field with fallback to ID col).
+    - **mpileup BED** (3-col 0-based, chr-prefixed to match modern hg38
+      BAM @SQ headers).
+  Alt-contig filter (default-on) drops alt/decoy contigs against the
+  canonical-chrom regex `^(chr)?([0-9]{1,2}|X|Y|MT|M)$` derived from
+  pileupCaller's parseSnpFile source — without it pileupCaller crashes
+  mid-Stage-3 with an uncatchable Haskell SeqFormatException 5-10 minutes
+  in. Defensive multi-allelic skip + numeric-chrom-map backstop covers
+  the alt_contig_filter=False edge case.
+- `pileup_aadr/pileup_call.py` — Stage 3: `run_pileup_call` builds the
+  `samtools mpileup -B -q30 -Q30 -R -f <fasta> -l <bed> <bam>` →
+  `pileupCaller --randomDiploid --seed N -f <snp> --sampleNames X
+  --samplePopName Y -e <prefix>` pipe via `ToolWrapper.pipe`. Default
+  threads cap at 4 (mpileup is BAM-seek-bound; verified empirically v2.1)
+  with `no_thread_cap` opt-out. SIGPIPE handling: tolerates upstream
+  exit 141 IFF downstream exited 0 (downstream is checked first); any
+  other non-zero combination raises `ToolSubprocessError` with the
+  stderr tail in the diagnostic. `parse_pileupcaller_stderr` extracts
+  the structured 6-col TSV summary block (SampleName, TotalSites,
+  NonMissingCalls, avgRawReads, avgDamageCleanedReads, avgSampledFrom);
+  missing header or data line → `PileupAadrInternalError` with format-
+  change diagnostic.
+
+### Tests added (Day 4; 160 total now)
+- `test_transform.py` — 9 tests: round-trip writes both files; numeric
+  chrom encoding (1-22 / 23 / 24 / 90); chr-prefixed 0-based BED;
+  AADR_RS INFO preferred over ID col; ID-col fallback when AADR_RS
+  absent; alt-contig filter default drops chr*_random / chrUn_GL* /
+  HLA-* contigs; alt_contig_filter=False with numeric-chrom-map
+  backstop; empty-VCF empty-output path; output-dir auto-creation.
+- `test_pileup_call.py` — 9 tests: stderr parser clean + missing-header
+  + missing-data-line raises; mocked-pipe clean run populates
+  Stage3CallCounters; downstream non-zero → ToolSubprocessError naming
+  pileupCaller in `what`; upstream 141 + downstream 0 tolerated;
+  upstream other non-zero → ToolSubprocessError naming samtools;
+  thread-cap default applied + INFO-logged; `no_thread_cap=True`
+  skips capping silently. ToolWrapper._resolve_binary monkeypatched
+  to bypass on-PATH lookup (test env lacks samtools/pileupCaller).
+- `tests/fixtures/stderr/pileupcaller_clean.stderr` — captured-from-v2.1
+  pileupCaller 1.6.0.0 stderr summary block for parser unit tests.
+
 ### Added (Day 3 — 2026-05-12)
 - `pileup_aadr/sites_vcf.py` — `build_sites_vcf` constructs a minimal
   VCF v4.2 from the AADR DataFrame, the shape Picard's LiftoverVcf
