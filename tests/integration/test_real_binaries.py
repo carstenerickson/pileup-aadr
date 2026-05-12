@@ -116,10 +116,16 @@ def test_extract_end_to_end(
     assert data["schema_version"] == 1
     assert data["stage_1_lift"] is not None
     assert data["stage_3_call"]["pileupcaller_summary"]["total_sites"] >= 0
-    # Load-bearing invariant: Stage1 swap count == Stage4 swap count
+    # Load-bearing invariant: Stage1's swap count is an UPPER bound on Stage4's
+    # applied swaps. Equality holds in the canonical case (every swap-flagged
+    # site's alleles match AADR's swap pattern), but Stage4's defensive sanity
+    # check drops sites where lifted REF/ALT don't actually swap to AADR REF/ALT
+    # — those count toward Stage4.allele_mismatch_drops. So:
+    #   stage_1.swapped_alleles_count == stage_4.ref_alt_swap_count + (some of
+    #   stage_4.allele_mismatch_drops). The strict invariant we assert is `>=`.
     assert (
         data["stage_1_lift"]["swapped_alleles_count"]
-        == data["stage_4_rejoin"]["ref_alt_swap_count"]
+        >= data["stage_4_rejoin"]["ref_alt_swap_count"]
     )
 
 
