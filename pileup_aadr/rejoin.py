@@ -7,7 +7,7 @@ in AADR's hg19 frame. Also computes the coverage gate's per-chrom breakdown.
 
 For the no-lift fast path (AADR build == BAM build), Stage 4 is trivialized:
 pileupCaller's output IS the final triplet (no rejoin needed). The
-`_no_lift_fast_path_finalize` helper just copies the triplet, walks .geno+.snp
+`no_lift_fast_path_finalize` helper just copies the triplet, walks .geno+.snp
 once for counters, overrides .ind with the user --sex, and constructs the
 sidecar.
 """
@@ -237,7 +237,7 @@ def rejoin_aadr_frame(
             )
             output_variants += 1
 
-            chrom_chr = normalize_chrom(aadr_chrom_int) or aadr_chrom_int
+            chrom_chr = normalize_chrom(aadr_chrom_int) or f"chr{aadr_chrom_int}"
             per_chrom_total[chrom_chr] = per_chrom_total.get(chrom_chr, 0) + 1
             if new_geno != GENO_MISSING:
                 per_chrom_call_count[chrom_chr] = per_chrom_call_count.get(chrom_chr, 0) + 1
@@ -297,9 +297,8 @@ def rejoin_aadr_frame(
     )
 
 
-def _no_lift_fast_path_finalize(
+def no_lift_fast_path_finalize(
     pileupcaller_eig_prefix: Path,
-    aadr_df: pd.DataFrame,
     output_prefix: Path,
     sample_name: str,
     pop_name: str,
@@ -314,7 +313,6 @@ def _no_lift_fast_path_finalize(
 
     Args:
         pileupcaller_eig_prefix: pileupCaller's <prefix> (reads .geno + .snp).
-        aadr_df: AADR DataFrame (used for autosomal-row denominator).
         output_prefix: final EIGENSTRAT prefix.
         sample_name: IID for output .ind.
         pop_name: POP for output .ind.
@@ -339,6 +337,7 @@ def _no_lift_fast_path_finalize(
     het_count = 0
     non_missing_autosomal = 0
     per_chrom_call_count: dict[str, int] = {}
+    per_chrom_total: dict[str, int] = {}
     per_variant_rows: list[dict[str, Any]] = []
 
     with open(pc_geno_path) as gh, open(pc_snp_path) as sh:
@@ -353,8 +352,9 @@ def _no_lift_fast_path_finalize(
                 )
                 continue
             rsid, chrom_int, _, pos, ref, alt = snp_parts
-            chrom_chr = normalize_chrom(chrom_int) or chrom_int
+            chrom_chr = normalize_chrom(chrom_int) or f"chr{chrom_int}"
             output_variants += 1
+            per_chrom_total[chrom_chr] = per_chrom_total.get(chrom_chr, 0) + 1
 
             if geno_char != GENO_MISSING:
                 per_chrom_call_count[chrom_chr] = per_chrom_call_count.get(chrom_chr, 0) + 1
@@ -382,8 +382,8 @@ def _no_lift_fast_path_finalize(
         no_lift=True,
     )
 
-    autosomal_aadr_count = int(
-        aadr_df[aadr_df["chrom_int"].isin([str(i) for i in range(1, 23)])].shape[0]
+    autosomal_aadr_count = sum(
+        per_chrom_total.get(f"chr{i}", 0) for i in range(1, 23)
     )
     coverage_fraction = (
         non_missing_autosomal / autosomal_aadr_count if autosomal_aadr_count else 0.0
@@ -457,7 +457,7 @@ __all__ = [
     "GENO_MISSING",
     "SWAP_DOSAGE",
     "RejoinOutput",
-    "_no_lift_fast_path_finalize",
+    "no_lift_fast_path_finalize",
     "build_merged_lookup",
     "build_swap_lookup",
     "rejoin_aadr_frame",

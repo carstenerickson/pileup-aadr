@@ -220,7 +220,7 @@ def merge_shard_eigenstrat(
                     "passed inconsistent args to shards"
                 ),
             )
-    shutil.copy(f"{manifest[0].output_prefix}.ind", merged_ind_path)
+    shutil.copy(Path(f"{manifest[0].output_prefix}.ind"), merged_ind_path)
 
     log.info(
         "Merged %d shards into %s: %d total rows",

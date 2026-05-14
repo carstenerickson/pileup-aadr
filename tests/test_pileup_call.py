@@ -301,6 +301,55 @@ def test_region_argument_appended_to_samtools_args(
     assert "chr1" in captured["upstream_args"]
 
 
+def test_region_comes_after_bam_in_samtools_args(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """samtools mpileup requires the region AFTER the BAM file: `mpileup [opts] bam [region]`.
+    Region before BAM causes samtools to try to open the region string as a BAM file."""
+    captured: dict[str, list[str]] = {}
+
+    def capture_pipe(
+        self: object,
+        downstream: object,
+        *,
+        upstream_args: list[str],
+        downstream_args: list[str],
+        upstream_stderr_to: Path,
+        downstream_stderr_to: Path,
+    ) -> tuple[ToolRunResult, ToolRunResult]:
+        captured["upstream_args"] = upstream_args
+        upstream_stderr_to.parent.mkdir(parents=True, exist_ok=True)
+        upstream_stderr_to.write_text("")
+        downstream_stderr_to.write_text(
+            (FIXTURES_STDERR / "pileupcaller_clean.stderr").read_text()
+        )
+        return (
+            ToolRunResult(exit_code=0, stdout=None, stderr_path=upstream_stderr_to,
+                          stderr_text=None, wallclock_seconds=0.1, peak_rss_mb=None),
+            ToolRunResult(exit_code=0, stdout=None, stderr_path=downstream_stderr_to,
+                          stderr_text=None, wallclock_seconds=0.1, peak_rss_mb=None),
+        )
+
+    from pileup_aadr import pileup_call as pc_mod
+    monkeypatch.setattr(pc_mod.ToolWrapper, "_resolve_binary",
+                        lambda _self, spec: Path(f"/usr/bin/fake_{spec.binary}"))
+    monkeypatch.setattr(pc_mod.ToolWrapper, "_check_version", lambda _self: None)
+    monkeypatch.setattr(pc_mod.ToolWrapper, "pipe", capture_pipe)
+
+    args = _common_run_args(tmp_path)
+    run_pileup_call(**args, region="chr1")
+
+    argv = captured["upstream_args"]
+    bam_str = str(args["bam_path"])
+    assert bam_str in argv
+    assert "chr1" in argv
+    assert argv.index(bam_str) < argv.index("chr1"), (
+        "region must come AFTER BAM in samtools mpileup argv; "
+        f"got: {argv}"
+    )
+
+
 # --- run_pileup_call_shards ---
 
 

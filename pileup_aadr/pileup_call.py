@@ -100,9 +100,9 @@ def run_pileup_call(
         "-f", str(target_fasta_path),
         "-l", str(bed_path),
     ])
+    samtools_args.append(str(bam_path))
     if region is not None:
         samtools_args.append(region)
-    samtools_args.append(str(bam_path))
 
     pileupcaller_args = [
         "--randomDiploid",
@@ -294,24 +294,18 @@ def run_pileup_call_shards(
     wall_total = time.perf_counter() - wall_t0
 
     # Aggregate per-shard summaries (call-count-weighted for avg fields)
-    total_sites = sum(shard_results[s.shard_index].pileupcaller_summary.total_sites for s in manifest)
-    total_non_missing = sum(shard_results[s.shard_index].pileupcaller_summary.non_missing_calls for s in manifest)
+    total_sites = 0
+    total_non_missing = 0
+    w_raw = w_dc = w_sf = 0.0
+    for s in manifest:
+        pc = shard_results[s.shard_index].pileupcaller_summary
+        total_sites += pc.total_sites
+        total_non_missing += pc.non_missing_calls
+        w_raw += pc.avg_raw_reads * pc.total_sites
+        w_dc += pc.avg_damage_cleaned_reads * pc.total_sites
+        w_sf += pc.avg_sampled_from * pc.total_sites
     if total_sites > 0:
-        avg_raw = sum(
-            shard_results[s.shard_index].pileupcaller_summary.avg_raw_reads *
-            shard_results[s.shard_index].pileupcaller_summary.total_sites
-            for s in manifest
-        ) / total_sites
-        avg_dc = sum(
-            shard_results[s.shard_index].pileupcaller_summary.avg_damage_cleaned_reads *
-            shard_results[s.shard_index].pileupcaller_summary.total_sites
-            for s in manifest
-        ) / total_sites
-        avg_sf = sum(
-            shard_results[s.shard_index].pileupcaller_summary.avg_sampled_from *
-            shard_results[s.shard_index].pileupcaller_summary.total_sites
-            for s in manifest
-        ) / total_sites
+        avg_raw, avg_dc, avg_sf = w_raw / total_sites, w_dc / total_sites, w_sf / total_sites
     else:
         avg_raw = avg_dc = avg_sf = 0.0
 
@@ -362,7 +356,8 @@ def parse_pileupcaller_stderr(stderr_text: str) -> PileupCallerSummary:
         PileupAadrInternalError: stderr lacks the expected header or data line
             (pileupCaller version-skew → fail closed).
     """
-    if _PILEUPCALLER_HEADER_RE.search(stderr_text) is None:
+    header_match = _PILEUPCALLER_HEADER_RE.search(stderr_text)
+    if header_match is None:
         raise PileupAadrInternalError(
             what="parse_pileupcaller_stderr",
             why="expected summary-stats header line not found in stderr",
@@ -373,8 +368,6 @@ def parse_pileupcaller_stderr(stderr_text: str) -> PileupCallerSummary:
                 "file a bug report with the stderr output attached"
             ),
         )
-    header_match = _PILEUPCALLER_HEADER_RE.search(stderr_text)
-    assert header_match is not None
     data_match = _PILEUPCALLER_DATA_RE.search(stderr_text, pos=header_match.end())
     if data_match is None:
         raise PileupAadrInternalError(

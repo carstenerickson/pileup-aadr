@@ -13,7 +13,6 @@ import pytest
 
 from pileup_aadr.errors import PileupAadrInternalError
 from pileup_aadr.rejoin import (
-    AADR_LOOKUP_FIELDS,
     AadrLookup,
     GENO_HET,
     GENO_HOM_ALT,
@@ -21,7 +20,7 @@ from pileup_aadr.rejoin import (
     GENO_MISSING,
     SWAP_DOSAGE,
     RejoinOutput,
-    _no_lift_fast_path_finalize,
+    no_lift_fast_path_finalize,
     build_merged_lookup,
     build_swap_lookup,
     rejoin_aadr_frame,
@@ -444,15 +443,52 @@ def test_build_merged_lookup_empty_swap_lookup(tmp_path: Path) -> None:
     assert len(lookup) == 2
 
 
+# --- Bug regression: normalize_chrom fallback ---
+
+
+def test_unknown_chrom_int_uses_chr_prefixed_key(tmp_path: Path) -> None:
+    """chrom_int not in _CHROM_NORMALIZE must produce a chr-prefixed key in
+    per_chrom_call_count, not a bare numeric string that silently poisons
+    downstream `.get('chrX', 0)` lookups in output.py."""
+    # "99" is not in _CHROM_NORMALIZE → normalize_chrom returns None
+    lookup: AadrLookup = {"rs_unk": ("99", 0.0, 1000, "A", "G", False)}
+    pc_prefix = tmp_path / "call"
+    pc_prefix.parent.mkdir(parents=True, exist_ok=True)
+    Path(f"{pc_prefix}.geno").write_text(GENO_HOM_REF + "\n")
+    Path(f"{pc_prefix}.snp").write_text("rs_unk\t99\t0.0\t1000\tA\tG\n")
+
+    result = rejoin_aadr_frame(pc_prefix, lookup, tmp_path / "out", "S", "P")
+
+    keys = set(result.coverage_counters.per_chrom_call_count)
+    assert "99" not in keys, f"raw numeric key must not appear; got keys={keys}"
+
+
+# --- Bug regression: no-lift coverage denominator ---
+
+
+def test_no_lift_coverage_fraction_denominator_is_output_sites(tmp_path: Path) -> None:
+    """Coverage fraction in the no-lift path must use pileupCaller output sites as
+    denominator, not the raw aadr_df row count (which can differ when aadr_df
+    has more rows than what ended up in the pileupCaller output)."""
+    pc_prefix = tmp_path / "call"
+    # pileupCaller emits only 2 of the 3 sites (rs3 absent — as if filtered upstream)
+    _write_pc_triplet(pc_prefix, [
+        ("rs1", "1", 0.0, 1000, "A", "G", GENO_HOM_REF),   # non-missing
+        ("rs2", "1", 0.0, 2000, "C", "T", GENO_MISSING),   # missing
+    ])
+
+    result = no_lift_fast_path_finalize(pc_prefix, tmp_path / "out", "S", "P")
+
+    assert result.coverage_counters.non_missing_autosomal_calls == 1
+    # denominator must be 2 (output sites), not 3 (aadr_df rows)
+    assert result.coverage_counters.coverage_fraction == round(1 / 2, 4)
+
+
 # --- No-lift fast path ---
 
 
 def test_no_lift_fast_path_copies_triplet(tmp_path: Path) -> None:
     """No-lift path: pileupCaller output IS the AADR-frame triplet, just copied."""
-    aadr = _aadr_df([
-        ("rs1", "1", 0.0, 1000, "A", "G"),
-        ("rs2", "22", 0.0, 2000, "C", "T"),
-    ])
     pc_prefix = tmp_path / "call"
     # In the no-lift case, pileupCaller's coords already match AADR
     _write_pc_triplet(pc_prefix, [
@@ -461,8 +497,8 @@ def test_no_lift_fast_path_copies_triplet(tmp_path: Path) -> None:
     ])
 
     out_prefix = tmp_path / "out"
-    result = _no_lift_fast_path_finalize(
-        pc_prefix, aadr, out_prefix, "Carsten", "TestPop"
+    result = no_lift_fast_path_finalize(
+        pc_prefix, out_prefix, "Carsten", "TestPop"
     )
 
     geno_lines = out_prefix.with_suffix(".geno").read_text().splitlines()
@@ -476,25 +512,23 @@ def test_no_lift_fast_path_copies_triplet(tmp_path: Path) -> None:
 
 def test_no_lift_fast_path_sidecar_notes_no_lift(tmp_path: Path) -> None:
     """No-lift sidecar's note mentions the fast path explicitly."""
-    aadr = _aadr_df([("rs1", "1", 0.0, 1000, "A", "G")])
     pc_prefix = tmp_path / "call"
     _write_pc_triplet(pc_prefix, [("rs1", "1", 0.0, 1000, "A", "G", GENO_HOM_REF)])
 
     out_prefix = tmp_path / "out"
-    result = _no_lift_fast_path_finalize(pc_prefix, aadr, out_prefix, "S", "P")
+    result = no_lift_fast_path_finalize(pc_prefix, out_prefix, "S", "P")
     assert "no-lift" in result.pseudohaploid_sidecar["samples"]["S"]["note"]
 
 
 def test_no_lift_overrides_pc_ind_with_user_sex(tmp_path: Path) -> None:
     """No-lift writes new .ind with user-supplied sex (pileupCaller writes SEX=U)."""
-    aadr = _aadr_df([("rs1", "1", 0.0, 1000, "A", "G")])
     pc_prefix = tmp_path / "call"
     _write_pc_triplet(pc_prefix, [("rs1", "1", 0.0, 1000, "A", "G", GENO_HOM_REF)])
     # PileupCaller's .ind would say SEX=U; we should override
     Path(f"{pc_prefix}.ind").write_text("PCSample\tU\tPCPop\n")
 
     out_prefix = tmp_path / "out"
-    _no_lift_fast_path_finalize(
-        pc_prefix, aadr, out_prefix, "Carsten", "TestPop", sex="F"
+    no_lift_fast_path_finalize(
+        pc_prefix, out_prefix, "Carsten", "TestPop", sex="F"
     )
     assert out_prefix.with_suffix(".ind").read_text().rstrip("\n") == "Carsten\tF\tTestPop"

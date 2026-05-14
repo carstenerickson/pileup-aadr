@@ -221,9 +221,8 @@ def _run_stages(
             min_mapq=args.min_mapq, min_baseq=args.min_baseq,
             no_baq=args.no_baq,
         )
-        rejoin_out = rejoin._no_lift_fast_path_finalize(
+        rejoin_out = rejoin.no_lift_fast_path_finalize(
             pileupcaller_eig_prefix=td_call / "user_native",
-            aadr_df=aadr_df,
             output_prefix=args.output_prefix,
             sample_name=sample_name, pop_name=pop_name, sex=args.sex,
             emit_per_variant_rows=(args.report_tsv is not None),

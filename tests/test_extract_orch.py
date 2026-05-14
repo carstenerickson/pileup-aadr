@@ -15,6 +15,7 @@ import pytest
 
 from pileup_aadr.counters import (
     PileupCallerSummary,
+    Stage1InputFilters,
     Stage1LiftCounters,
     Stage3CallCounters,
 )
@@ -411,8 +412,10 @@ def test_full_lift_path_dispatches_to_stage_1(
                                 "IndelStraddlesMultipleIntervals": 0,
                                 "SwappedAlleles": 0, "other": 0},
             swapped_alleles_count=0,
-            input_filters={"palindrome_drops": 0, "non_snp_drops": 0,
-                           "non_autosome_drops": 0},
+            input_filters=Stage1InputFilters(
+                palindrome_drops=0, non_snp_drops=0,
+                non_autosome_drops=0, rows_written=50,
+            ),
         )
 
     monkeypatch.setattr(extract_orch.lift, "lift_aadr_sites", fake_lift)

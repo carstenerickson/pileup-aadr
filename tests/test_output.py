@@ -10,6 +10,7 @@ from pileup_aadr.counters import (
     CoverageCounters,
     ExtractCounters,
     PileupCallerSummary,
+    Stage1InputFilters,
     Stage1LiftCounters,
     Stage2TransformCounters,
     Stage3CallCounters,
@@ -42,11 +43,12 @@ def _full_lift_counters() -> ExtractCounters:
                 "SwappedAlleles": 0, "other": 0,
             },
             swapped_alleles_count=16,
-            input_filters={
-                "palindrome_drops": 95_000,
-                "non_snp_drops": 0,
-                "non_autosome_drops": 0,
-            },
+            input_filters=Stage1InputFilters(
+                palindrome_drops=95_000,
+                non_snp_drops=0,
+                non_autosome_drops=0,
+                rows_written=1_100_000,
+            ),
         ),
         stage_2_transform=Stage2TransformCounters(
             wallclock_seconds=4.2, alt_contig_drops=120, output_sites=1_098_380,

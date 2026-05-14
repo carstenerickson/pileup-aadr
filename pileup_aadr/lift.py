@@ -344,11 +344,7 @@ def lift_aadr_sites(
         liftover_yield_warning=yield_warning,
         rejected_by_reason=rejected_by_reason,
         swapped_alleles_count=parsed["swapped_count"],
-        input_filters={
-            "palindrome_drops": input_filter_counters.palindrome_drops,
-            "non_snp_drops": input_filter_counters.non_snp_drops,
-            "non_autosome_drops": input_filter_counters.non_autosome_drops,
-        },
+        input_filters=input_filter_counters,
     )
 
 

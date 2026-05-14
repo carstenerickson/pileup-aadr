@@ -163,11 +163,11 @@ def write_stdout_summary(
         out.write(f"  Input variants:                 {aadr_total:>10,}\n")
         out.write(
             f"  Pre-lift filter (palindromes):  "
-            f"{-s1.input_filters['palindrome_drops']:>10,}\n"
+            f"{-s1.input_filters.palindrome_drops:>10,}\n"
         )
         out.write(
             f"  Pre-lift filter (non-SNP):      "
-            f"{-s1.input_filters['non_snp_drops']:>10,}\n"
+            f"{-s1.input_filters.non_snp_drops:>10,}\n"
         )
         for reason, count in s1.rejected_by_reason.items():
             if count > 0:

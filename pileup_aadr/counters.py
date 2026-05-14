@@ -13,8 +13,8 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class Stage1InputFilters:
-    """Counter return shape from `sites_vcf.build_sites_vcf`, fed into Stage1LiftCounters
-    as the `input_filters` dict-equivalent fields."""
+    """Counter return shape from `sites_vcf.build_sites_vcf`; stored directly
+    as `Stage1LiftCounters.input_filters`."""
 
     palindrome_drops: int
     non_snp_drops: int
@@ -35,8 +35,7 @@ class Stage1LiftCounters:
     # ^ {"NoTarget": N, "MismatchedRefAllele": N, "IndelStraddlesMultipleIntervals": N,
     #    "SwappedAlleles": N, "other": N}
     swapped_alleles_count: int  # Picard's SwappedAlleles INFO marker count (recovered, not rejected)
-    input_filters: dict[str, int]
-    # ^ {"palindrome_drops": N, "non_snp_drops": N, "non_autosome_drops": N}
+    input_filters: Stage1InputFilters
 
 
 @dataclass(frozen=True)

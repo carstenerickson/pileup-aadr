@@ -24,7 +24,7 @@ from typing import Any
 
 import pytest
 
-from pileup_aadr.rejoin import _no_lift_fast_path_finalize
+from pileup_aadr.rejoin import no_lift_fast_path_finalize
 
 
 def _build_minimal_aadr_df() -> Any:
@@ -64,14 +64,11 @@ def test_sidecar_carries_all_fields_pgen_samplebind_expects(tmp_path: Path) -> N
     """The sidecar JSON has every key per pgen-samplebind#2's design:
     schema_version + samples[<id>] with pseudohaploid + het_count + het_rate +
     non_missing_autosomal_count + source + calling_mode + note."""
-    aadr_df = _build_minimal_aadr_df()
     pc_prefix = tmp_path / "call" / "user_native"
     _build_pc_triplet(pc_prefix)
     out_prefix = tmp_path / "out" / "sample"
 
-    result = _no_lift_fast_path_finalize(
-        pc_prefix, aadr_df, out_prefix, "Sample", "Pop",
-    )
+    result = no_lift_fast_path_finalize(pc_prefix, out_prefix, "Sample", "Pop")
     sidecar = result.pseudohaploid_sidecar
 
     # Top-level shape
@@ -102,13 +99,10 @@ def test_sidecar_serializes_as_valid_json(tmp_path: Path) -> None:
     (catches accidental non-JSON-serializable values like Path or set)."""
     from pileup_aadr.output import write_pseudohaploid_sidecar
 
-    aadr_df = _build_minimal_aadr_df()
     pc_prefix = tmp_path / "call" / "user_native"
     _build_pc_triplet(pc_prefix)
     out_prefix = tmp_path / "out" / "sample"
-    result = _no_lift_fast_path_finalize(
-        pc_prefix, aadr_df, out_prefix, "Sample", "Pop",
-    )
+    result = no_lift_fast_path_finalize(pc_prefix, out_prefix, "Sample", "Pop")
 
     sidecar_path = Path(f"{out_prefix}.pseudohaploid.json")
     write_pseudohaploid_sidecar(sidecar_path, result.pseudohaploid_sidecar)
@@ -119,11 +113,10 @@ def test_sidecar_serializes_as_valid_json(tmp_path: Path) -> None:
 def test_eigenstrat_triplet_has_pgen_samplebind_compatible_shape(tmp_path: Path) -> None:
     """pgen-samplebind's loader expects a 6-col .snp + 1-char-per-line .geno +
     3-col .ind. Verify each."""
-    aadr_df = _build_minimal_aadr_df()
     pc_prefix = tmp_path / "call" / "user_native"
     _build_pc_triplet(pc_prefix)
     out_prefix = tmp_path / "out" / "sample"
-    _no_lift_fast_path_finalize(pc_prefix, aadr_df, out_prefix, "Sample", "Pop")
+    no_lift_fast_path_finalize(pc_prefix, out_prefix, "Sample", "Pop")
 
     geno_lines = Path(f"{out_prefix}.geno").read_text().splitlines()
     snp_lines = Path(f"{out_prefix}.snp").read_text().splitlines()
@@ -159,14 +152,11 @@ def test_pgen_samplebind_can_ingest_extract_output(tmp_path: Path) -> None:
     """
     import subprocess
 
-    aadr_df = _build_minimal_aadr_df()
     pc_prefix = tmp_path / "call" / "user_native"
     _build_pc_triplet(pc_prefix)
     out_prefix = tmp_path / "out" / "sample"
     from pileup_aadr.output import write_pseudohaploid_sidecar
-    result = _no_lift_fast_path_finalize(
-        pc_prefix, aadr_df, out_prefix, "Sample", "Pop",
-    )
+    result = no_lift_fast_path_finalize(pc_prefix, out_prefix, "Sample", "Pop")
     write_pseudohaploid_sidecar(
         Path(f"{out_prefix}.pseudohaploid.json"), result.pseudohaploid_sidecar,
     )

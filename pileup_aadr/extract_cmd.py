@@ -217,10 +217,8 @@ def extract(ctx: click.Context, **kwargs: Any) -> None:
     # ENABLES samtools BAQ recalibration (-B is the disable-BAQ flag). So:
     #   --enable-baq passed (samtools BAQ wanted)  -> no_baq=True
     #   --enable-baq omitted (default; -B passed)  -> no_baq=False
-    # The previous `not enable_baq` mapping was inverted: CLI default produced
-    # BAQ-enabled mpileup (wrong vs HLD §"CLI reference > pileup / call" which
-    # specifies "default: -B is passed, disabling samtools BAQ to match
-    # pileupCaller's recommended cmdline"). Caught by LLD #19 layer-B.
+    # --enable-baq passed → BAQ on → no_baq=False is wrong, flip: no_baq=True.
+    # CLI default: BAQ off (samtools -B), so enable_baq=False → no_baq=False.
     enable_baq = kwargs.pop("enable_baq", False)
     kwargs["no_baq"] = enable_baq
     args = ExtractCliArgs(**kwargs)
