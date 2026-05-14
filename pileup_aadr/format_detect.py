@@ -265,6 +265,30 @@ def _sanitize_iid(raw: str) -> str:
 
 _AADR_COLUMNS: Final[list[str]] = ["rsid", "chrom_int", "gen_morgans", "pos_bp", "ref", "alt"]
 
+# Expected dtypes for the post-index DataFrame (rsid is the index, not a column).
+_AADR_EXPECTED_DTYPES: Final[dict[str, str]] = {
+    "chrom_int": "object",
+    "gen_morgans": "float64",
+    "pos_bp": "int64",
+    "ref": "object",
+    "alt": "object",
+}
+
+
+def _validate_cached_df(df: pd.DataFrame) -> str | None:
+    """Return an error string if df doesn't match the expected schema, else None."""
+    expected_cols = set(_AADR_EXPECTED_DTYPES)
+    actual_cols = set(df.columns)
+    missing = expected_cols - actual_cols
+    extra = actual_cols - expected_cols
+    if missing or extra:
+        return f"column mismatch: missing={sorted(missing)}, extra={sorted(extra)}"
+    for col, expected_dtype in _AADR_EXPECTED_DTYPES.items():
+        actual = str(df[col].dtype)
+        if actual != expected_dtype:
+            return f"dtype mismatch on '{col}': expected {expected_dtype}, got {actual}"
+    return None
+
 
 def _aadr_cache_path(sha256: str) -> Path:
     """XDG-respecting path for the schema-versioned feather cache of a parsed .snp."""
@@ -304,8 +328,15 @@ def parse_aadr_snp(aadr_snp_path: Path) -> pd.DataFrame:
     cache_disabled = os.environ.get("PILEUP_AADR_DISABLE_SNP_CACHE", "0") not in ("", "0")
     cache_path = _aadr_cache_path(sha256)
     if not cache_disabled and cache_path.exists():
-        log.info("AADR .snp cache hit (v%d): %s", PARSE_SCHEMA_VERSION, cache_path)
-        return pd.read_feather(cache_path).set_index("rsid")
+        try:
+            cached = pd.read_feather(cache_path).set_index("rsid")
+            schema_error = _validate_cached_df(cached)
+            if schema_error is None:
+                log.info("AADR .snp cache hit (v%d): %s", PARSE_SCHEMA_VERSION, cache_path)
+                return cached
+            log.debug("AADR cache schema mismatch — re-parsing: %s", schema_error)
+        except Exception as exc:
+            log.debug("AADR cache read failed — re-parsing: %s", exc)
 
     rows: list[tuple[str, str, float, int, str, str]] = []
     with open(aadr_snp_path) as f:

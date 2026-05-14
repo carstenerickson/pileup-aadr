@@ -362,7 +362,9 @@ def test_cache_miss_populates_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 def test_cache_hit_skips_full_parse(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """C2: second call uses pd.read_feather (cache hit path), not the text parser."""
     import unittest.mock as mock
+
     import pandas as pd
+
     import pileup_aadr.format_detect as fd
 
     snp = tmp_path / "sites.snp"
@@ -420,3 +422,79 @@ def test_cache_disabled_env_var_skips_read_and_write(
         cache_dir / "pileup-aadr" / "snp"
     ).exists() else []
     assert feather_files == [], "cache write must be skipped when env var is set"
+
+
+def test_cache_schema_mismatch_falls_through_to_reparse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """C5: feather with wrong dtype falls through to re-parse and returns correct df.
+
+    Writes a feather where pos_bp is stored as float64 (schema mismatch) at the
+    exact cache path the code would use for the test .snp file, then calls
+    parse_aadr_snp. Expects a clean DataFrame with int64 pos_bp rather than the
+    broken cached one.
+    """
+    import hashlib
+
+    import pandas as pd
+
+    from pileup_aadr.format_detect import _aadr_cache_path
+
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache_dir))
+    monkeypatch.delenv("PILEUP_AADR_DISABLE_SNP_CACHE", raising=False)
+
+    snp = tmp_path / "sites.snp"
+    _write_minimal_snp(snp)
+
+    # Write a schema-broken feather at the correct content-addressed path.
+    sha256 = hashlib.sha256(snp.read_bytes()).hexdigest()
+    bad_path = _aadr_cache_path(sha256)
+    bad_path.parent.mkdir(parents=True, exist_ok=True)
+    bad_df = pd.DataFrame({
+        "rsid": ["rs1", "rs2"],
+        "chrom_int": ["1", "1"],
+        "gen_morgans": [0.0, 0.0],
+        "pos_bp": [1000.0, 2000.0],  # float64 — schema mismatch
+        "ref": ["A", "C"],
+        "alt": ["G", "T"],
+    })
+    bad_df.to_feather(bad_path)
+
+    df = parse_aadr_snp(snp)
+    assert str(df["pos_bp"].dtype) == "int64", "re-parse must return int64 pos_bp"
+    assert "rs1" in df.index
+
+
+def test_validate_cached_df_catches_missing_column(tmp_path: Path) -> None:
+    """C6: _validate_cached_df returns error string when a required column is absent."""
+    import pandas as pd
+
+    from pileup_aadr.format_detect import _validate_cached_df
+
+    df = pd.DataFrame({
+        "chrom_int": ["1"],
+        "gen_morgans": [0.0],
+        # pos_bp intentionally missing
+        "ref": ["A"],
+        "alt": ["G"],
+    })
+    result = _validate_cached_df(df)
+    assert result is not None
+    assert "pos_bp" in result
+
+
+def test_validate_cached_df_passes_correct_schema(tmp_path: Path) -> None:
+    """C7: _validate_cached_df returns None for a correctly typed DataFrame."""
+    import pandas as pd
+
+    from pileup_aadr.format_detect import _validate_cached_df
+
+    df = pd.DataFrame({
+        "chrom_int": pd.Series(["1"], dtype=object),
+        "gen_morgans": pd.Series([0.0], dtype="float64"),
+        "pos_bp": pd.Series([1000], dtype="int64"),
+        "ref": pd.Series(["A"], dtype=object),
+        "alt": pd.Series(["G"], dtype=object),
+    })
+    assert _validate_cached_df(df) is None
