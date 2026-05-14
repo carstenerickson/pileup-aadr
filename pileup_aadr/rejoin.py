@@ -449,16 +449,16 @@ def _build_sidecar(
 
 __all__ = [
     "AADR_LOOKUP_FIELDS",
-    "AadrLookup",
-    "AadrLookupValue",
     "GENO_HET",
     "GENO_HOM_ALT",
     "GENO_HOM_REF",
     "GENO_MISSING",
     "SWAP_DOSAGE",
+    "AadrLookup",
+    "AadrLookupValue",
     "RejoinOutput",
-    "no_lift_fast_path_finalize",
     "build_merged_lookup",
     "build_swap_lookup",
+    "no_lift_fast_path_finalize",
     "rejoin_aadr_frame",
 ]

@@ -73,7 +73,7 @@ def build_shard_manifest(
 ) -> list[ShardSpec]:
     """Partition the Stage 2 sites .snp + BED into per-chromosome shards.
 
-    Stage 2 emits both files in CHROM_ORDER × pos_bp order (build_sites_vcf
+    Stage 2 emits both files in CHROM_ORDER x pos_bp order (build_sites_vcf
     sorts pre-Picard; Picard preserves order; transform.py iterates the lifted
     VCF in file order), so grouping rows by chromosome in a single linear pass
     preserves per-chromosome position order. Empty chromosomes (no rows in input)
