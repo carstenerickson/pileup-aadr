@@ -13,16 +13,16 @@ import pytest
 
 from pileup_aadr.errors import PileupAadrInternalError
 from pileup_aadr.rejoin import (
-    AadrLookup,
     GENO_HET,
     GENO_HOM_ALT,
     GENO_HOM_REF,
     GENO_MISSING,
     SWAP_DOSAGE,
+    AadrLookup,
     RejoinOutput,
-    no_lift_fast_path_finalize,
     build_merged_lookup,
     build_swap_lookup,
+    no_lift_fast_path_finalize,
     rejoin_aadr_frame,
 )
 

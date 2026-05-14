@@ -111,9 +111,9 @@ def test_extract_end_to_end(
     for ext in (".geno", ".snp", ".ind", ".pseudohaploid.json"):
         assert Path(f"{out_prefix}{ext}").exists(), f"missing output {ext}"
 
-    # JSON report has the expected schema-1 shape
+    # JSON report has the expected schema-2 shape
     data = json.loads(report.read_text())
-    assert data["schema_version"] == 1
+    assert data["schema_version"] == 2
     assert data["stage_1_lift"] is not None
     assert data["stage_3_call"]["pileupcaller_summary"]["total_sites"] >= 0
     # Load-bearing invariant: Stage1's swap count is an UPPER bound on Stage4's

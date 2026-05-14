@@ -35,7 +35,7 @@ def _make_shard_output(prefix: Path, rsids: list[str], sample: str = "S") -> Sha
     """Write a fake pileupCaller shard triplet and return a ShardSpec pointing to it."""
     prefix.parent.mkdir(parents=True, exist_ok=True)
     with open(f"{prefix}.geno", "w") as gh, open(f"{prefix}.snp", "w") as sh:
-        for i, rsid in enumerate(rsids):
+        for rsid in rsids:
             gh.write("0\n")
             sh.write(f"{rsid}\t1\t0.0\t1000\tA\tG\n")
     Path(f"{prefix}.ind").write_text(f"{sample}\tU\tPop\n")
@@ -122,7 +122,7 @@ def test_merge_preserves_manifest_chrom_order(tmp_path: Path) -> None:
         ),
     ]
 
-    geno_path, snp_path, ind_path = merge_shard_eigenstrat(manifest, tmp_path / "merged")
+    geno_path, snp_path, _ind_path = merge_shard_eigenstrat(manifest, tmp_path / "merged")
 
     geno_lines = geno_path.read_text().splitlines()
     snp_lines = snp_path.read_text().splitlines()
