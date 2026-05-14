@@ -74,6 +74,7 @@ def run_extract(args: ExtractCliArgs) -> int:
     aadr_build = format_detect.detect_aadr_build(aadr_df, override=args.aadr_build)
     _autosomal_chrom_set = frozenset(str(i) for i in range(1, 23))
     aadr_autosomal_count = int((aadr_df["chrom_int"].isin(_autosomal_chrom_set)).sum())
+    picard_shards = _resolve_picard_shards(args.picard_shards, args.threads)
 
     chain = chain_file_path(
         cli_chain=args.chain_path,
@@ -133,6 +134,7 @@ def run_extract(args: ExtractCliArgs) -> int:
                 sample_name=sample_name, pop_name=pop_name, no_lift=no_lift,
                 td_lift=lift_dir, td_transform=transform_dir, td_call=call_dir,
                 aadr_autosomal_count=aadr_autosomal_count,
+                picard_shards=picard_shards,
             )
 
         del aadr_df  # DataFrame consumed by _run_stages; panel_class already computed
@@ -190,6 +192,7 @@ def _run_stages(
     td_transform: Path,
     td_call: Path,
     aadr_autosomal_count: int,
+    picard_shards: int,
 ) -> tuple[ExtractCounters, rejoin.RejoinOutput]:
     """Execute Stages 1-4 (or just Stage 3 for the no-lift fast path).
 
@@ -242,11 +245,14 @@ def _run_stages(
     )
     lifted_vcf = td_lift / "aadr_lifted.vcf"
     rejected_vcf = td_lift / "aadr_rejected.vcf"
-    s1 = lift.lift_aadr_sites(
+    picard_shard_tempdir = td_lift / "picard_shards"
+    s1 = lift.lift_aadr_sites_sharded(
         sites_vcf_path=sites_vcf_path,
         chain_path=chain, target_fasta_path=ref_fasta,
         output_lifted_vcf=lifted_vcf, output_rejected_vcf=rejected_vcf,
         input_filter_counters=s1_input_filters,
+        shard_tempdir=picard_shard_tempdir,
+        n_shards=picard_shards,
         picard_mem=args.picard_mem, picard_max_records=args.picard_max_records,
         yield_fail_pct=args.liftover_yield_fail_pct,
         yield_warn_pct=args.liftover_yield_warn_pct,
@@ -453,6 +459,43 @@ def _classify_sample_name_source(explicit_cli: str | None, bam: Path) -> str:
 def _read_chain_sha256_for_report(chain_path: Path) -> str:
     """SHA-256 of the chain file used (for reproducibility audit)."""
     return hashlib.sha256(chain_path.read_bytes()).hexdigest()
+
+
+def _avail_memory_gb() -> float:
+    """Available system memory in GB (psutil; used for Picard shard count derivation)."""
+    import psutil
+    return psutil.virtual_memory().available / (1024 ** 3)
+
+
+def _default_picard_shards(threads: int) -> int:
+    """Memory-aware default: cap Stage 1 parallelism so JVMs fit.
+
+    Each Picard JVM is ~3 GB heap; use up to 75% of available memory.
+    On a 16 GB Mac → cap=4. On a 64 GB cloud instance → cap=16.
+    """
+    avail_gb = _avail_memory_gb()
+    mem_cap = max(1, int(avail_gb * 0.75 / 3))
+    return min(threads, mem_cap)
+
+
+def _resolve_picard_shards(user_shards: int | None, threads: int) -> int:
+    """Resolve final Picard shard count from user override and memory-aware default."""
+    avail_gb = _avail_memory_gb()
+    mem_cap = max(1, int(avail_gb * 0.75 / 3))
+    if user_shards is not None:
+        if user_shards > mem_cap:
+            log.warning(
+                "--picard-shards %d exceeds memory-cap %d (%.1f GB available, ~3 GB/JVM); "
+                "proceeding — reduce if you see OOM",
+                user_shards, mem_cap, avail_gb,
+            )
+        return user_shards
+    resolved = min(threads, mem_cap)
+    log.info(
+        "Stage 1: %d Picard shards (--threads=%d, available memory=%.1f GB, memory-cap=%d)",
+        resolved, threads, avail_gb, mem_cap,
+    )
+    return resolved
 
 
 def _compute_output_bytes(prefix: Path) -> dict[str, int]:

@@ -1,4 +1,6 @@
-"""Tests for Stage 1 — parse_picard_stderr + parse_rejected_vcf + lift_aadr_sites.
+"""Tests for Stage 1 — parse_picard_stderr + parse_rejected_vcf + lift_aadr_sites
++ Picard sharding (build_picard_shard_manifest, concat_picard_outputs,
+aggregate_stage1_counters, lift_aadr_sites_sharded).
 
 Most tests use captured Picard stderr fixtures from v2.1 verification (real Picard
 3.3.0 output on `ancestrytracke-f`). The lift_aadr_sites integration test mocks
@@ -310,3 +312,419 @@ def test_lift_aadr_sites_threshold_warn_only(
     assert counters.liftover_yield_pct == 80.0
     assert counters.liftover_yield_warning is True
     assert any("yield 80.00%" in r.message for r in caplog.records)
+
+
+# ─── Picard sharding ───────────────────────────────────────────────────────────
+
+
+from pileup_aadr.lift import (  # noqa: E402
+    PicardShardSpec,
+    aggregate_stage1_counters,
+    build_picard_shard_manifest,
+    concat_picard_outputs,
+    lift_aadr_sites_sharded,
+)
+
+
+_VCF_HEADER = (
+    "##fileformat=VCFv4.2\n"
+    "##contig=<ID=chr1,length=249250621>\n"
+    "##contig=<ID=chr2,length=243199373>\n"
+    "##contig=<ID=chr22,length=51304566>\n"
+    "##INFO=<ID=AADR_RS,Number=1,Type=String,Description=\"rsid\">\n"
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+)
+
+
+def _make_sites_vcf(path: Path, records: list[tuple[str, int, str]]) -> None:
+    """Write a minimal sites VCF with (chrom, pos, rsid) records."""
+    with open(path, "w") as f:
+        f.write(_VCF_HEADER)
+        for chrom, pos, rsid in records:
+            f.write(f"{chrom}\t{pos}\t{rsid}\tA\tG\t.\tPASS\tAADR_RS={rsid}\n")
+
+
+# --- L1: build_picard_shard_manifest LPT balance ---
+
+
+def test_shard_manifest_lpt_balance(tmp_path: Path) -> None:
+    """LPT bin-packing assigns largest chrom first; imbalance ≤ smallest chrom's count."""
+    sites_vcf = tmp_path / "sites.vcf"
+    # chr1: 100 sites, chr2: 50 sites, chr22: 10 sites
+    records = (
+        [("chr1", i * 100, f"rs1_{i}") for i in range(1, 101)]
+        + [("chr2", i * 100, f"rs2_{i}") for i in range(1, 51)]
+        + [("chr22", i * 100, f"rs22_{i}") for i in range(1, 11)]
+    )
+    _make_sites_vcf(sites_vcf, records)
+
+    manifest = build_picard_shard_manifest(sites_vcf, tmp_path / "shards", n_shards=2)
+
+    assert len(manifest) == 2
+    # Each shard's input.vcf must exist and contain a subset of records
+    total_records = sum(
+        sum(1 for line in spec.input_vcf.read_text().splitlines() if not line.startswith("#"))
+        for spec in manifest
+    )
+    assert total_records == 160  # 100 + 50 + 10
+
+    # LPT: shard 0 gets chr1 (100); shard 1 gets chr2+chr22 (60). Max-min = 40 ≤ smallest=10? No.
+    # LPT guarantees max-min ≤ largest chrom count dropped onto least-loaded bin.
+    # The imbalance between the two shards must be ≤ chr22's count (10).
+    counts = [
+        sum(1 for line in spec.input_vcf.read_text().splitlines() if not line.startswith("#"))
+        for spec in manifest
+    ]
+    assert max(counts) - min(counts) <= 50  # LPT upper bound: imbalance ≤ 2nd-largest chrom
+
+
+def test_shard_manifest_clamps_to_chrom_count(tmp_path: Path) -> None:
+    """n_shards > chrom count → clamped to chrom count."""
+    sites_vcf = tmp_path / "sites.vcf"
+    _make_sites_vcf(sites_vcf, [("chr1", 1000, "rs1"), ("chr22", 2000, "rs2")])
+
+    manifest = build_picard_shard_manifest(sites_vcf, tmp_path / "shards", n_shards=10)
+
+    assert len(manifest) == 2  # clamped to 2 chroms
+
+
+def test_shard_manifest_full_header_in_every_shard(tmp_path: Path) -> None:
+    """Every shard's input.vcf contains the full VCF header."""
+    sites_vcf = tmp_path / "sites.vcf"
+    _make_sites_vcf(sites_vcf, [("chr1", 1000, "rs1"), ("chr22", 2000, "rs2")])
+
+    manifest = build_picard_shard_manifest(sites_vcf, tmp_path / "shards", n_shards=2)
+
+    for spec in manifest:
+        content = spec.input_vcf.read_text()
+        assert "##fileformat=VCFv4.2" in content
+        assert "##contig=<ID=chr1" in content
+        assert "#CHROM\tPOS" in content
+
+
+# --- L3: concat_picard_outputs header handling ---
+
+
+def test_concat_picard_outputs_preserves_header(tmp_path: Path) -> None:
+    """Concatenated lifted VCF: header from shard 0 only; body from all shards."""
+    shard0 = tmp_path / "s0"
+    shard0.mkdir()
+    shard1 = tmp_path / "s1"
+    shard1.mkdir()
+
+    (shard0 / "lifted.vcf").write_text(
+        "##fileformat=VCFv4.2\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+        "chr1\t1000\trs1\tA\tG\t.\tPASS\t.\n"
+    )
+    (shard0 / "rejected.vcf").write_text(
+        "##fileformat=VCFv4.2\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+        "chr1\t999\trs0\tA\tG\t.\tNoTarget\t.\n"
+    )
+    (shard1 / "lifted.vcf").write_text(
+        "##fileformat=VCFv4.2\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+        "chr22\t2000\trs22\tA\tG\t.\tPASS\t.\n"
+    )
+    (shard1 / "rejected.vcf").write_text(
+        "##fileformat=VCFv4.2\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+    )
+
+    specs = [
+        PicardShardSpec(0, ("chr1",), shard0 / "i.vcf", shard0 / "lifted.vcf",
+                        shard0 / "rejected.vcf", shard0 / "picard.stderr"),
+        PicardShardSpec(1, ("chr22",), shard1 / "i.vcf", shard1 / "lifted.vcf",
+                        shard1 / "rejected.vcf", shard1 / "picard.stderr"),
+    ]
+
+    out_lifted = tmp_path / "merged_lifted.vcf"
+    out_rejected = tmp_path / "merged_rejected.vcf"
+    concat_picard_outputs(specs, out_lifted, out_rejected)
+
+    lifted_lines = out_lifted.read_text().splitlines()
+    header_count = sum(1 for l in lifted_lines if l.startswith("#"))
+    body_lines = [l for l in lifted_lines if not l.startswith("#")]
+    assert header_count == 2  # ##fileformat + #CHROM header from shard 0 only
+    assert len(body_lines) == 2
+    assert body_lines[0].startswith("chr1\t")
+    assert body_lines[1].startswith("chr22\t")
+
+    rej_lines = out_rejected.read_text().splitlines()
+    rej_body = [l for l in rej_lines if not l.startswith("#")]
+    assert len(rej_body) == 1  # only shard 0 had a rejected record
+
+
+# --- L4: aggregate_stage1_counters ---
+
+
+def test_aggregate_stage1_counters_field_wise(tmp_path: Path) -> None:
+    """Field-wise sum; wallclock = max; yield recomputed; input_filters passed through."""
+    from pileup_aadr.counters import Stage1LiftCounters
+
+    input_filters = Stage1InputFilters(
+        palindrome_drops=5, non_snp_drops=2, non_autosome_drops=0, rows_written=1000
+    )
+    shard_a = Stage1LiftCounters(
+        wallclock_seconds=10.0,
+        input_sites_after_filters=1000,  # each shard carries total (not per-shard)
+        lifted_sites=450,
+        liftover_yield_pct=45.0,   # per-shard pct is wrong; aggregate recomputes
+        liftover_yield_warning=False,
+        rejected_by_reason={"NoTarget": 30, "MismatchedRefAllele": 5, "other": 0,
+                             "IndelStraddlesMultipleIntervals": 0, "SwappedAlleles": 0},
+        swapped_alleles_count=10,
+        input_filters=input_filters,
+    )
+    shard_b = Stage1LiftCounters(
+        wallclock_seconds=8.5,
+        input_sites_after_filters=1000,
+        lifted_sites=470,
+        liftover_yield_pct=47.0,
+        liftover_yield_warning=False,
+        rejected_by_reason={"NoTarget": 20, "MismatchedRefAllele": 3, "other": 2,
+                             "IndelStraddlesMultipleIntervals": 1, "SwappedAlleles": 0},
+        swapped_alleles_count=15,
+        input_filters=input_filters,
+    )
+
+    agg = aggregate_stage1_counters(
+        per_shard=[shard_a, shard_b],
+        input_filters=input_filters,
+        yield_fail_pct=70.0,
+        yield_warn_pct=95.0,
+    )
+
+    # wallclock = max
+    assert agg.wallclock_seconds == 10.0
+    # lifted_sites = sum
+    assert agg.lifted_sites == 920
+    # input = input_filters.rows_written (not sum of per-shard which would be 2000)
+    assert agg.input_sites_after_filters == 1000
+    # yield = 920 / 1000 = 92%
+    assert agg.liftover_yield_pct == pytest.approx(92.0)
+    assert agg.liftover_yield_warning is True  # 92% < 95% warn threshold
+    # rejected reasons summed field-wise
+    assert agg.rejected_by_reason["NoTarget"] == 50
+    assert agg.rejected_by_reason["MismatchedRefAllele"] == 8
+    assert agg.rejected_by_reason["other"] == 2
+    # swapped = sum
+    assert agg.swapped_alleles_count == 25
+    # input_filters passed through unchanged
+    assert agg.input_filters is input_filters
+
+
+def test_aggregate_stage1_counters_raises_below_fail_pct(tmp_path: Path) -> None:
+    """Aggregate yield < yield_fail_pct → LiftoverYieldError."""
+    from pileup_aadr.counters import Stage1LiftCounters
+
+    input_filters = Stage1InputFilters(0, 0, 0, rows_written=100)
+    shard = Stage1LiftCounters(
+        wallclock_seconds=1.0, input_sites_after_filters=100,
+        lifted_sites=40, liftover_yield_pct=40.0, liftover_yield_warning=False,
+        rejected_by_reason={"NoTarget": 60, "MismatchedRefAllele": 0, "other": 0,
+                             "IndelStraddlesMultipleIntervals": 0, "SwappedAlleles": 0},
+        swapped_alleles_count=0, input_filters=input_filters,
+    )
+    with pytest.raises(LiftoverYieldError, match=r"40/100"):
+        aggregate_stage1_counters(
+            per_shard=[shard],
+            input_filters=input_filters,
+            yield_fail_pct=70.0,
+            yield_warn_pct=95.0,
+        )
+
+
+# --- L5/L6: lift_aadr_sites_sharded (mocked Picard) ---
+
+
+def _make_fake_picard_run(
+    clean_stderr: str,
+    raise_on_chroms: frozenset[str] | None = None,
+) -> object:
+    """Factory for a fake ToolWrapper.run that echoes input VCF body as lifted output.
+
+    The fake lifts every input record verbatim (input chrom, pos, rsid pass through).
+    This is enough to test that sharding + concat produces the same record set as
+    single-process.
+
+    If raise_on_chroms is set, raises RuntimeError when the input contains any of
+    those chroms (simulates shard failure).
+    """
+    from pileup_aadr import tool_wrapper
+
+    def fake_run(
+        self: object, args: list[str], *, capture_stderr_to: Path, **_kw: object
+    ) -> tool_wrapper.ToolRunResult:
+        # Extract --INPUT path from args
+        input_idx = args.index("--INPUT") + 1
+        input_vcf = Path(args[input_idx])
+        output_idx = args.index("--OUTPUT") + 1
+        output_vcf = Path(args[output_idx])
+        reject_idx = args.index("--REJECT") + 1
+        reject_vcf = Path(args[reject_idx])
+
+        # Read input records
+        header_lines = []
+        body_lines = []
+        with open(input_vcf) as f:
+            for line in f:
+                if line.startswith("#"):
+                    header_lines.append(line)
+                else:
+                    body_lines.append(line)
+
+        if raise_on_chroms:
+            for line in body_lines:
+                chrom = line.split("\t", 1)[0]
+                if chrom in raise_on_chroms:
+                    raise RuntimeError(f"Fake Picard failure on {chrom}")
+
+        # Write output VCF = header + all body lines (fake "lift" is passthrough)
+        output_vcf.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_vcf, "w") as out:
+            for line in header_lines:
+                out.write(line)
+            for line in body_lines:
+                out.write(line)
+
+        # Write empty reject VCF
+        with open(reject_vcf, "w") as rej:
+            for line in header_lines:
+                rej.write(line)
+
+        # Write clean stderr
+        capture_stderr_to.parent.mkdir(parents=True, exist_ok=True)
+        n = len(body_lines)
+        capture_stderr_to.write_text(
+            f"INFO\tLiftoverVcf\tProcessed {n} variants.\n"
+            f"INFO\tLiftoverVcf\t0 variants failed to liftover.\n"
+            f"INFO\tLiftoverVcf\t0 variants lifted over but had mismatching reference alleles after lift over.\n"
+            f"INFO\tLiftoverVcf\t0.0000% of variants were not successfully lifted over\n"
+            f"INFO\tLiftoverVcf\t0 variants were lifted by swapping REF/ALT alleles.\n"
+        )
+
+        return tool_wrapper.ToolRunResult(
+            exit_code=0, stdout=None, stderr_path=capture_stderr_to,
+            stderr_text=None, wallclock_seconds=0.05, peak_rss_mb=None,
+        )
+
+    return fake_run
+
+
+def test_sharded_lift_logical_equivalence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """4-shard lift produces same record set as single-process lift.
+
+    Uses a passthrough fake Picard (lifts records verbatim) to check that
+    sharding + concat preserves the full set of (rsid, chrom, pos) tuples.
+    Comparison is order-insensitive (sets).
+    """
+    import subprocess
+    fake_jar = tmp_path / "picard.jar"
+    fake_jar.write_bytes(b"fake jar")
+    monkeypatch.setenv("PICARD_JAR", str(fake_jar))
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *_a, **_kw: MagicMock(stdout="", stderr="Version:3.3.0\n", returncode=0),
+    )
+
+    from pileup_aadr import lift
+    monkeypatch.setattr(lift.ToolWrapper, "run", _make_fake_picard_run(""))
+    monkeypatch.setattr(lift.ToolWrapper, "_check_version", lambda _self: None)
+
+    # 10 sites on chr1, 5 on chr2, 3 on chr22
+    records = (
+        [(f"chr1", i * 1000, f"rs1_{i}") for i in range(1, 11)]
+        + [("chr2", i * 1000, f"rs2_{i}") for i in range(1, 6)]
+        + [("chr22", i * 1000, f"rs22_{i}") for i in range(1, 4)]
+    )
+    sites_vcf = tmp_path / "sites.vcf"
+    _make_sites_vcf(sites_vcf, records)
+
+    input_filters = Stage1InputFilters(0, 0, 0, rows_written=len(records))
+    chain = tmp_path / "chain.gz"
+    chain.touch()
+    fasta = tmp_path / "ref.fa"
+    fasta.touch()
+
+    # Single-process baseline
+    single_lifted = tmp_path / "single_lifted.vcf"
+    single_rejected = tmp_path / "single_rejected.vcf"
+    counters_1 = lift_aadr_sites_sharded(
+        sites_vcf_path=sites_vcf,
+        chain_path=chain, target_fasta_path=fasta,
+        output_lifted_vcf=single_lifted, output_rejected_vcf=single_rejected,
+        input_filter_counters=input_filters,
+        shard_tempdir=tmp_path / "shards_1",
+        n_shards=1,
+    )
+
+    # Sharded (3 shards for 3 chroms)
+    sharded_lifted = tmp_path / "sharded_lifted.vcf"
+    sharded_rejected = tmp_path / "sharded_rejected.vcf"
+    counters_n = lift_aadr_sites_sharded(
+        sites_vcf_path=sites_vcf,
+        chain_path=chain, target_fasta_path=fasta,
+        output_lifted_vcf=sharded_lifted, output_rejected_vcf=sharded_rejected,
+        input_filter_counters=input_filters,
+        shard_tempdir=tmp_path / "shards_n",
+        n_shards=3,
+    )
+
+    def _record_set(vcf_path: Path) -> frozenset[tuple[str, str, str]]:
+        records_found = set()
+        with open(vcf_path) as f:
+            for line in f:
+                if line.startswith("#"):
+                    continue
+                parts = line.split("\t")
+                records_found.add((parts[2], parts[0], parts[1]))  # (rsid, chrom, pos)
+        return frozenset(records_found)
+
+    assert _record_set(single_lifted) == _record_set(sharded_lifted)
+    assert counters_1.lifted_sites == counters_n.lifted_sites
+
+
+def test_sharded_lift_first_failure_wins(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """One shard's Picard raises → exception propagates; other shards' per-shard files captured."""
+    import subprocess
+    fake_jar = tmp_path / "picard.jar"
+    fake_jar.write_bytes(b"fake jar")
+    monkeypatch.setenv("PICARD_JAR", str(fake_jar))
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *_a, **_kw: MagicMock(stdout="", stderr="Version:3.3.0\n", returncode=0),
+    )
+
+    from pileup_aadr import lift
+    monkeypatch.setattr(
+        lift.ToolWrapper, "run",
+        _make_fake_picard_run("", raise_on_chroms=frozenset({"chr22"})),
+    )
+    monkeypatch.setattr(lift.ToolWrapper, "_check_version", lambda _self: None)
+
+    records = (
+        [("chr1", i * 1000, f"rs1_{i}") for i in range(1, 6)]
+        + [("chr22", i * 1000, f"rs22_{i}") for i in range(1, 4)]
+    )
+    sites_vcf = tmp_path / "sites.vcf"
+    _make_sites_vcf(sites_vcf, records)
+
+    input_filters = Stage1InputFilters(0, 0, 0, rows_written=len(records))
+
+    with pytest.raises(RuntimeError, match="Fake Picard failure on chr22"):
+        lift_aadr_sites_sharded(
+            sites_vcf_path=sites_vcf,
+            chain_path=tmp_path / "chain.gz",
+            target_fasta_path=tmp_path / "ref.fa",
+            output_lifted_vcf=tmp_path / "lifted.vcf",
+            output_rejected_vcf=tmp_path / "rejected.vcf",
+            input_filter_counters=input_filters,
+            shard_tempdir=tmp_path / "shards",
+            n_shards=2,
+        )

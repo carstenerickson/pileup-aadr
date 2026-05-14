@@ -516,3 +516,41 @@ def test_no_lift_json_report_schema_version_and_fan_out_config(
     assert data["schema_version"] == 2
     assert data["config"]["fan_out_strategy"] == "per_chromosome"
     assert "shard_seed_derivation" in data["config"]
+
+
+# --- L7/L8: _resolve_picard_shards ---
+
+def test_picard_shards_default_memory_aware(monkeypatch: pytest.MonkeyPatch) -> None:
+    """L7: default picard_shards = min(threads, floor(avail_gb * 0.75 / 3)) via psutil."""
+    import pileup_aadr.extract_orch as orch
+
+    # Patch psutil to report 24 GB available → mem_cap = floor(24 * 0.75 / 3) = 6
+    class _FakeVM:
+        available = 24 * 1024 ** 3
+
+    monkeypatch.setattr(
+        "pileup_aadr.extract_orch._avail_memory_gb",
+        lambda: 24.0,
+    )
+    # threads=4, mem_cap=6 → min(4, 6) = 4
+    assert orch._resolve_picard_shards(None, 4) == 4
+    # threads=8, mem_cap=6 → min(8, 6) = 6
+    assert orch._resolve_picard_shards(None, 8) == 6
+
+
+def test_picard_shards_user_override_with_warning(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """L8: explicit --picard-shards N > mem_cap emits a WARNING but honours the override."""
+    import logging
+    import pileup_aadr.extract_orch as orch
+
+    monkeypatch.setattr("pileup_aadr.extract_orch._avail_memory_gb", lambda: 3.0)
+    # mem_cap = floor(3 * 0.75 / 3) = 0 → clamped to 1
+    # user asks for 4 → warning expected
+    with caplog.at_level(logging.WARNING, logger="pileup_aadr.extract_orch"):
+        result = orch._resolve_picard_shards(4, threads=1)
+
+    assert result == 4
+    assert any("picard-shards" in r.message.lower() or "memory" in r.message.lower()
+               for r in caplog.records), "expected a WARNING about memory cap"

@@ -330,3 +330,93 @@ def test_classify_chr22_only_is_custom(tmp_path: Path) -> None:
     from pileup_aadr.format_detect import classify_aadr_chrom_set
     df = _aadr_df_from_chroms(tmp_path, ["22"])
     assert classify_aadr_chrom_set(df) == "custom"
+
+
+# --- C1-C4: AADR .snp parse cache ---
+
+def _write_minimal_snp(path: Path) -> None:
+    """Write a minimal valid AADR .snp with 2 rows."""
+    path.write_text(
+        "rs1\t1\t0.0\t1000\tA\tG\n"
+        "rs2\t1\t0.0\t2000\tC\tT\n"
+    )
+
+
+def test_cache_miss_populates_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """C1: first parse writes feather; result equals second parse (cache hit)."""
+    snp = tmp_path / "sites.snp"
+    _write_minimal_snp(snp)
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache_dir))
+    monkeypatch.delenv("PILEUP_AADR_DISABLE_SNP_CACHE", raising=False)
+
+    df1 = parse_aadr_snp(snp)
+    feather_files = list((cache_dir / "pileup-aadr" / "snp").glob("*.feather"))
+    assert len(feather_files) == 1, "cache write should produce exactly one feather"
+
+    df2 = parse_aadr_snp(snp)
+    assert list(df1.index) == list(df2.index)
+    assert list(df1["pos_bp"]) == list(df2["pos_bp"])
+
+
+def test_cache_hit_skips_full_parse(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """C2: second call uses pd.read_feather (cache hit path), not the text parser."""
+    import unittest.mock as mock
+    import pandas as pd
+    import pileup_aadr.format_detect as fd
+
+    snp = tmp_path / "sites.snp"
+    _write_minimal_snp(snp)
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache_dir))
+    monkeypatch.delenv("PILEUP_AADR_DISABLE_SNP_CACHE", raising=False)
+
+    parse_aadr_snp(snp)  # cold parse → writes cache
+
+    with mock.patch.object(fd.pd, "read_feather", wraps=pd.read_feather) as spy:
+        df2 = parse_aadr_snp(snp)
+        assert spy.call_count == 1, "cache hit must call read_feather once"
+
+    assert "rs1" in df2.index
+
+
+def test_cache_invalidated_on_content_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """C3: different file content → different SHA256 → cache miss → new entry."""
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache_dir))
+    monkeypatch.delenv("PILEUP_AADR_DISABLE_SNP_CACHE", raising=False)
+
+    snp = tmp_path / "sites.snp"
+    _write_minimal_snp(snp)
+    parse_aadr_snp(snp)
+
+    snp.write_text(
+        "rs1\t1\t0.0\t1000\tA\tG\n"
+        "rs2\t1\t0.0\t2000\tC\tT\n"
+        "rs3\t2\t0.0\t3000\tA\tC\n"
+    )
+    df2 = parse_aadr_snp(snp)
+    assert "rs3" in df2.index
+
+    feather_files = list((cache_dir / "pileup-aadr" / "snp").glob("*.feather"))
+    assert len(feather_files) == 2, "two distinct content hashes → two cache entries"
+
+
+def test_cache_disabled_env_var_skips_read_and_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """C4: PILEUP_AADR_DISABLE_SNP_CACHE=1 → no feather written; re-parse always re-reads."""
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache_dir))
+    monkeypatch.setenv("PILEUP_AADR_DISABLE_SNP_CACHE", "1")
+
+    snp = tmp_path / "sites.snp"
+    _write_minimal_snp(snp)
+    parse_aadr_snp(snp)
+
+    feather_files = list((cache_dir / "pileup-aadr" / "snp").glob("*.feather")) if (
+        cache_dir / "pileup-aadr" / "snp"
+    ).exists() else []
+    assert feather_files == [], "cache write must be skipped when env var is set"

@@ -301,8 +301,9 @@ def parse_aadr_snp(aadr_snp_path: Path) -> pd.DataFrame:
         AADRDuplicateRsidError: duplicate rsid in file (Stage 4 join requires unique IDs)
     """
     sha256 = hashlib.sha256(aadr_snp_path.read_bytes()).hexdigest()
+    cache_disabled = os.environ.get("PILEUP_AADR_DISABLE_SNP_CACHE", "0") not in ("", "0")
     cache_path = _aadr_cache_path(sha256)
-    if cache_path.exists():
+    if not cache_disabled and cache_path.exists():
         log.info("AADR .snp cache hit (v%d): %s", PARSE_SCHEMA_VERSION, cache_path)
         return pd.read_feather(cache_path).set_index("rsid")
 
@@ -368,12 +369,13 @@ def parse_aadr_snp(aadr_snp_path: Path) -> pd.DataFrame:
         len(df), df["chrom_int"].nunique(),
     )
 
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        df.reset_index().to_feather(cache_path)
-        log.info("AADR .snp cached (v%d): %s", PARSE_SCHEMA_VERSION, cache_path)
-    except Exception as exc:
-        log.debug("AADR parse cache write skipped: %s", exc)
+    if not cache_disabled:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            df.reset_index().to_feather(cache_path)
+            log.info("AADR .snp cached (v%d): %s", PARSE_SCHEMA_VERSION, cache_path)
+        except Exception as exc:
+            log.debug("AADR parse cache write skipped: %s", exc)
 
     return df
 

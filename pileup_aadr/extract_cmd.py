@@ -122,6 +122,16 @@ from .types import ExtractCliArgs
         "concurrent samtools mpileup | pileupCaller processes)"
     ),
 )
+@click.option(
+    "--picard-shards",
+    type=click.IntRange(min=1),
+    default=None,
+    help=(
+        "Stage 1 Picard concurrency. Default: derived from --threads and "
+        "available memory (each Picard JVM is ~3 GB). Override only if you "
+        "need to constrain or expand Stage 1 separately from Stage 3."
+    ),
+)
 @click.option("--min-mapq", type=int, default=30, help="mpileup -q (default: 30)")
 @click.option("--min-baseq", type=int, default=30, help="mpileup -Q (default: 30)")
 @click.option(

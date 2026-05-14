@@ -12,14 +12,16 @@ Two layers:
 """
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import importlib.resources as res
 import logging
 import os
 import re
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 import pysam
 
@@ -348,6 +350,341 @@ def lift_aadr_sites(
     )
 
 
+@dataclass(frozen=True)
+class PicardShardSpec:
+    """One Stage 1 shard — N shards per run, grouped by source chrom for balance."""
+
+    shard_index: int
+    source_chroms: tuple[str, ...]  # canonical "chr1".."chr22" / "chrX" / "chrY"
+    input_vcf: Path               # per-shard sites VCF (full header + filtered body)
+    lifted_vcf: Path              # per-shard Picard OUTPUT
+    rejected_vcf: Path            # per-shard Picard REJECT
+    stderr_path: Path             # per-shard Picard stderr
+
+
+def build_picard_shard_manifest(
+    sites_vcf_path: Path,
+    shard_dir: Path,
+    n_shards: int,
+) -> list[PicardShardSpec]:
+    """Partition sites VCF into N shards via LPT bin-packing on per-chrom counts.
+
+    Two-pass: pass 1 counts records per source chrom; pass 2 streams records to
+    per-shard input VCF files. All shards get the full VCF header (Picard validates
+    each CHROM against declared ##contig lines). Clamps n_shards to chrom count.
+
+    Args:
+        sites_vcf_path: sorted sites VCF from build_sites_vcf.
+        shard_dir: parent directory for shard_{00..NN}/ subdirs.
+        n_shards: target shard count; clamped to number of chroms with sites.
+
+    Returns:
+        list[PicardShardSpec] sorted by shard_index, length = min(n_shards, chroms_with_sites).
+    """
+    # Pass 1: collect header lines + count records per source chrom
+    header_lines: list[str] = []
+    chrom_counts: dict[str, int] = {}
+    with open(sites_vcf_path) as f:
+        for line in f:
+            if line.startswith("#"):
+                header_lines.append(line)
+            else:
+                chrom = line.split("\t", 1)[0]
+                chrom_counts[chrom] = chrom_counts.get(chrom, 0) + 1
+
+    if not chrom_counts:
+        raise PileupAadrInternalError(
+            what="build_picard_shard_manifest",
+            why="sites VCF has no data records (build_sites_vcf produced empty output)",
+            fix="Inspect Stage 1 input filters; AADR panel may have no canonical-chrom sites",
+        )
+
+    # Clamp to chrom count
+    actual_shards = min(n_shards, len(chrom_counts))
+    if actual_shards < n_shards:
+        log.info(
+            "Picard shard count clamped from %d to %d (only %d chroms with sites)",
+            n_shards, actual_shards, len(chrom_counts),
+        )
+
+    # LPT bin-packing: sort chroms by count descending; greedily assign to least-loaded shard
+    sorted_chroms = sorted(chrom_counts.keys(), key=lambda c: chrom_counts[c], reverse=True)
+    shard_totals = [0] * actual_shards
+    shard_chroms: list[list[str]] = [[] for _ in range(actual_shards)]
+    for chrom in sorted_chroms:
+        min_shard = min(range(actual_shards), key=lambda i: shard_totals[i])
+        shard_chroms[min_shard].append(chrom)
+        shard_totals[min_shard] += chrom_counts[chrom]
+
+    chrom_to_shard: dict[str, int] = {
+        c: i for i, chroms in enumerate(shard_chroms) for c in chroms
+    }
+
+    # Open per-shard input VCF files and write full header to each
+    shard_dir.mkdir(parents=True, exist_ok=True)
+    specs: list[PicardShardSpec] = []
+    shard_handles: dict[int, Any] = {}
+    try:
+        for i, chroms in enumerate(shard_chroms):
+            if not chroms:
+                continue
+            sd = shard_dir / f"shard_{i:02d}"
+            sd.mkdir(exist_ok=True)
+            input_vcf = sd / "input.vcf"
+            specs.append(PicardShardSpec(
+                shard_index=i,
+                source_chroms=tuple(sorted(chroms)),
+                input_vcf=input_vcf,
+                lifted_vcf=sd / "lifted.vcf",
+                rejected_vcf=sd / "rejected.vcf",
+                stderr_path=sd / "picard.stderr",
+            ))
+            fh = open(input_vcf, "w")
+            shard_handles[i] = fh
+            for line in header_lines:
+                fh.write(line)
+
+        # Pass 2: stream body records to per-shard files
+        with open(sites_vcf_path) as f:
+            for line in f:
+                if line.startswith("#"):
+                    continue
+                chrom = line.split("\t", 1)[0]
+                shard_idx = chrom_to_shard.get(chrom)
+                if shard_idx is not None:
+                    shard_handles[shard_idx].write(line)
+    finally:
+        for fh in shard_handles.values():
+            fh.close()
+
+    specs.sort(key=lambda s: s.shard_index)
+    log.info(
+        "Built Picard shard manifest: %d shards from %d chroms; "
+        "sizes %s",
+        len(specs), len(chrom_counts),
+        [shard_totals[s.shard_index] for s in specs],
+    )
+    return specs
+
+
+def concat_picard_outputs(
+    shards: list[PicardShardSpec],
+    out_lifted: Path,
+    out_rejected: Path,
+) -> None:
+    """Concat per-shard lifted + rejected VCFs in shard-index order.
+
+    Headers (lines starting with '#') from shard 0 only; body records from all shards.
+    Shards are expected to be in shard_index order (build_picard_shard_manifest guarantees this).
+    """
+    out_lifted.parent.mkdir(parents=True, exist_ok=True)
+    for out_path, vcf_attr in [
+        (out_lifted, "lifted_vcf"),
+        (out_rejected, "rejected_vcf"),
+    ]:
+        with open(out_path, "w") as out:
+            for i, shard in enumerate(shards):
+                shard_path: Path = getattr(shard, vcf_attr)
+                if not shard_path.exists():
+                    continue
+                with open(shard_path) as vcf_in:
+                    for line in vcf_in:
+                        if i > 0 and line.startswith("#"):
+                            continue  # header from shard 0 only
+                        out.write(line)
+
+
+def aggregate_stage1_counters(
+    per_shard: list[Stage1LiftCounters],
+    input_filters: Stage1InputFilters,
+    yield_fail_pct: float,
+    yield_warn_pct: float,
+) -> Stage1LiftCounters:
+    """Field-wise aggregate of per-shard Stage1 counters.
+
+    input_sites_after_filters comes from input_filters.rows_written (the total from
+    build_sites_vcf) — not summed from per-shard counters, which each carry the total
+    (since lift_aadr_sites is called with the shared input_filters object for each shard).
+    wallclock = max (shards run in parallel). liftover_yield_pct recomputed from totals.
+    Yield gate evaluated on aggregated totals.
+    """
+    total_input = input_filters.rows_written
+    total_lifted = sum(c.lifted_sites for c in per_shard)
+    total_swapped = sum(c.swapped_alleles_count for c in per_shard)
+    max_wallclock = max(c.wallclock_seconds for c in per_shard)
+
+    rejected_by_reason: dict[str, int] = {}
+    for c in per_shard:
+        for reason, count in c.rejected_by_reason.items():
+            rejected_by_reason[reason] = rejected_by_reason.get(reason, 0) + count
+
+    yield_pct = 100.0 * total_lifted / total_input if total_input > 0 else 0.0
+    yield_warning = yield_pct < yield_warn_pct
+
+    if yield_pct < yield_fail_pct:
+        dominant = max(
+            rejected_by_reason.items(), key=lambda kv: kv[1], default=("unknown", 0)
+        )
+        raise LiftoverYieldError(
+            what=f"yield {yield_pct:.2f}% (< {yield_fail_pct}% gate)",
+            why=(
+                f"{total_lifted}/{total_input} sites lifted; dominant rejection: "
+                f"{dominant[0]} ({dominant[1]} sites)"
+            ),
+            fix=(
+                "Verify chain file matches BAM build + verify --ref-fasta matches "
+                f"BAM @PG. For dominant rejection '{dominant[0]}', see the "
+                "troubleshooting guide."
+            ),
+        )
+
+    if yield_warning:
+        dominant_name = max(
+            rejected_by_reason.items(), key=lambda kv: kv[1], default=("none", 0)
+        )[0]
+        log.warning(
+            "Liftover yield %.2f%% is below warn threshold %.1f%% (still proceeding); "
+            "dominant rejection reason: %s",
+            yield_pct, yield_warn_pct, dominant_name,
+        )
+
+    log.info(
+        "Stage 1 aggregate (%d shards): %d lifted of %d (%.2f%% yield, %d swapped); "
+        "max shard wallclock %.1fs",
+        len(per_shard), total_lifted, total_input, yield_pct, total_swapped, max_wallclock,
+    )
+
+    return Stage1LiftCounters(
+        wallclock_seconds=max_wallclock,
+        input_sites_after_filters=total_input,
+        lifted_sites=total_lifted,
+        liftover_yield_pct=round(yield_pct, 4),
+        liftover_yield_warning=yield_warning,
+        rejected_by_reason=rejected_by_reason,
+        swapped_alleles_count=total_swapped,
+        input_filters=input_filters,
+    )
+
+
+def lift_aadr_sites_sharded(
+    sites_vcf_path: Path,
+    chain_path: Path,
+    target_fasta_path: Path,
+    output_lifted_vcf: Path,
+    output_rejected_vcf: Path,
+    input_filter_counters: Stage1InputFilters,
+    shard_tempdir: Path,
+    n_shards: int,
+    *,
+    picard_mem: str = "3g",
+    picard_max_records: int = 100_000,
+    yield_fail_pct: float = 70.0,
+    yield_warn_pct: float = 95.0,
+) -> Stage1LiftCounters:
+    """Sharded Picard LiftoverVcf.
+
+    Behavior:
+      - n_shards == 1: short-circuit to `lift_aadr_sites` (byte-identical to v0.3).
+      - n_shards >  1: partition sites VCF by source chrom (LPT bin-packing),
+        run N Picards in parallel, concat lifted+rejected, aggregate counters.
+
+    No-lift fast path interaction: this function is not called when
+    `aadr_build == bam_build` — the orchestrator routes around Stage 1 entirely.
+
+    Args:
+        sites_vcf_path: sorted sites VCF from build_sites_vcf.
+        chain_path: resolved chain file.
+        target_fasta_path: TARGET assembly FASTA (hg38; .dict sidecar must exist).
+        output_lifted_vcf: merged lifted VCF output path.
+        output_rejected_vcf: merged rejected VCF output path.
+        input_filter_counters: from build_sites_vcf; stamped onto returned counters unchanged.
+        shard_tempdir: parent dir for shard_{00..NN}/ working subdirs.
+        n_shards: target Picard parallelism; clamped to chrom count.
+        picard_mem: JVM heap per shard (default "3g").
+        picard_max_records: --MAX_RECORDS_IN_RAM per shard (default 100_000).
+        yield_fail_pct: aggregate yield gate (default 70.0).
+        yield_warn_pct: aggregate yield warning (default 95.0).
+
+    Returns:
+        Stage1LiftCounters (aggregated; wallclock = max shard time).
+
+    Raises:
+        LiftoverYieldError: aggregate yield < yield_fail_pct.
+        ToolSubprocessError: any Picard shard exited non-zero (first failure wins).
+        PileupAadrInternalError: Picard stderr parse failure.
+    """
+    if n_shards == 1:
+        return lift_aadr_sites(
+            sites_vcf_path=sites_vcf_path,
+            chain_path=chain_path,
+            target_fasta_path=target_fasta_path,
+            output_lifted_vcf=output_lifted_vcf,
+            output_rejected_vcf=output_rejected_vcf,
+            input_filter_counters=input_filter_counters,
+            picard_mem=picard_mem,
+            picard_max_records=picard_max_records,
+            yield_fail_pct=yield_fail_pct,
+            yield_warn_pct=yield_warn_pct,
+        )
+
+    manifest = build_picard_shard_manifest(sites_vcf_path, shard_tempdir, n_shards)
+    actual_shards = len(manifest)
+
+    def _run_shard(spec: PicardShardSpec) -> Stage1LiftCounters:
+        # Suppress per-shard yield gates — aggregate after all shards complete.
+        # Per-shard denom is wrong (uses total input_filter_counters.rows_written),
+        # so skip per-shard gate entirely; aggregate_stage1_counters evaluates correctly.
+        return lift_aadr_sites(
+            sites_vcf_path=spec.input_vcf,
+            chain_path=chain_path,
+            target_fasta_path=target_fasta_path,
+            output_lifted_vcf=spec.lifted_vcf,
+            output_rejected_vcf=spec.rejected_vcf,
+            input_filter_counters=input_filter_counters,
+            picard_mem=picard_mem,
+            picard_max_records=picard_max_records,
+            yield_fail_pct=0.0,   # no per-shard gate
+            yield_warn_pct=0.0,   # no per-shard warn
+        )
+
+    per_shard_counters: dict[int, Stage1LiftCounters] = {}
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=actual_shards, thread_name_prefix="picard-shard"
+    ) as executor:
+        futures = {executor.submit(_run_shard, spec): spec for spec in manifest}
+        try:
+            for future in concurrent.futures.as_completed(futures):
+                spec = futures[future]
+                per_shard_counters[spec.shard_index] = future.result()
+                log.debug(
+                    "Picard shard %d (%s) done: %.1fs",
+                    spec.shard_index,
+                    ", ".join(spec.source_chroms),
+                    per_shard_counters[spec.shard_index].wallclock_seconds,
+                )
+        except Exception:
+            executor.shutdown(wait=True, cancel_futures=True)
+            raise
+
+    concat_picard_outputs(manifest, output_lifted_vcf, output_rejected_vcf)
+
+    # Combine per-shard stderrs to the canonical location for debugging
+    combined_stderr = output_lifted_vcf.parent / "picard.stderr"
+    with open(combined_stderr, "w") as out_stderr:
+        for shard in manifest:
+            if shard.stderr_path.exists():
+                out_stderr.write(f"# --- shard {shard.shard_index} ({', '.join(shard.source_chroms)}) ---\n")
+                out_stderr.write(shard.stderr_path.read_text())
+
+    ordered_counters = [per_shard_counters[s.shard_index] for s in manifest]
+    return aggregate_stage1_counters(
+        per_shard=ordered_counters,
+        input_filters=input_filter_counters,
+        yield_fail_pct=yield_fail_pct,
+        yield_warn_pct=yield_warn_pct,
+    )
+
+
 def parse_picard_stderr(stderr_text: str) -> dict[str, int]:
     """Extract structured counters from Picard LiftoverVcf stderr.
 
@@ -435,9 +772,14 @@ def parse_rejected_vcf(rejected_vcf_path: Path) -> dict[str, int]:
 
 
 __all__ = [
+    "PicardShardSpec",
+    "aggregate_stage1_counters",
+    "build_picard_shard_manifest",
     "chain_file_path",
+    "concat_picard_outputs",
     "get_bundled_chain_path",
     "lift_aadr_sites",
+    "lift_aadr_sites_sharded",
     "parse_picard_stderr",
     "parse_rejected_vcf",
     "resolve_chain_for_extract",

@@ -103,6 +103,7 @@
     "keep_palindromes": false,
     "keep_alt_contigs": false,
     "threads": 1,
+    "picard_shards": null,
     "min_mapq": 30,
     "min_baseq": 30,
     "no_baq": true,

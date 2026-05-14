@@ -6,6 +6,49 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-05-14
+
+Picard chromosome sharding for Stage 1 parallelism, AADR `.snp` parse cache,
+pre-sort at parse, autosomal count computed once, per-shard Stage 3 tempdir
+cleanup, and removal of the deprecated `--no-thread-cap` flag.
+
+277 tests passing; ruff clean.
+
+### Added
+- **Picard chromosome sharding** (`--picard-shards N`). Stage 1 splits the
+  sites VCF by chromosome using LPT bin-packing, runs up to N Picard
+  LiftoverVcf JVMs concurrently via `ThreadPoolExecutor`, then concatenates
+  lifted/rejected VCFs. Per-shard yield gates are suppressed; the aggregate
+  yield is checked against the combined total. Two-knob model: `--threads`
+  controls Stage 3 fan-out (~250 MB/shard), `--picard-shards` controls Stage 1
+  fan-out (~3 GB/JVM). Default: `min(threads, floor(avail_gb × 0.75 / 3))`
+  via `psutil`. `--picard-shards 1` (or derived=1) short-circuits to the
+  single-process path with no behavioral change.
+- **AADR `.snp` parse cache.** `parse_aadr_snp` writes a schema-versioned
+  feather file at `$XDG_CACHE_HOME/pileup-aadr/snp/<sha256>.v1.feather` after
+  the first parse. Subsequent runs with the same file skip the text parse
+  entirely. `PILEUP_AADR_DISABLE_SNP_CACHE=1` disables read and write. Cache
+  version constant `PARSE_SCHEMA_VERSION = 1` — bump when DataFrame schema
+  changes to auto-invalidate stale entries.
+- **Pre-sort at parse.** `parse_aadr_snp` guarantees CHROM_ORDER × pos_bp
+  order after parse; `build_sites_vcf` no longer re-sorts (boolean indexing
+  preserves order). Downstream consumers receive correctly ordered output
+  without duplicate sort work.
+- **Autosomal count computed once.** Orchestrator computes
+  `aadr_autosomal_count` from the parsed DataFrame once and passes it through
+  to `rejoin_aadr_frame` / `no_lift_fast_path_finalize`; the inline per-call
+  recomputation is removed.
+- **Per-shard Stage 3 tempdir cleanup.** After `merge_shard_eigenstrat`,
+  each shard's working directory is removed via `shutil.rmtree(...,
+  ignore_errors=True)`. Total tempdir footprint reduced from
+  O(shards × BAM size) to O(1 shard × BAM size) at peak.
+- New runtime dependencies: `pyarrow>=13.0` (feather cache), `psutil>=5.9`
+  (memory-aware shard count).
+
+### Removed
+- **`--no-thread-cap` hidden flag** (deprecated in v0.3). Removed from CLI,
+  `ExtractCliArgs`, and orchestrator. The two-knob memory model supersedes it.
+
 ## [0.3.0] — 2026-05-14
 
 Chromosome fan-out for Stage 3 parallelism, flat-dict rejoin hot-path,
