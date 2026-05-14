@@ -322,6 +322,7 @@ from pileup_aadr.lift import (  # noqa: E402
     aggregate_stage1_counters,
     build_picard_shard_manifest,
     concat_picard_outputs,
+    lift_and_transform_sharded,
     lift_aadr_sites_sharded,
 )
 
@@ -727,3 +728,154 @@ def test_sharded_lift_first_failure_wins(
             shard_tempdir=tmp_path / "shards",
             n_shards=2,
         )
+
+
+# ─── lift_and_transform_sharded ────────────────────────────────────────────────
+
+
+def _setup_fake_picard(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    raise_on_chroms: frozenset[str] | None = None,
+) -> None:
+    """Patch ToolWrapper.run + subprocess.run for version probe."""
+    import subprocess
+    from unittest.mock import MagicMock
+    from pileup_aadr import lift
+
+    fake_jar = tmp_path / "picard.jar"
+    fake_jar.write_bytes(b"fake jar")
+    monkeypatch.setenv("PICARD_JAR", str(fake_jar))
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *_a, **_kw: MagicMock(stdout="", stderr="Version:3.3.0\n", returncode=0),
+    )
+    monkeypatch.setattr(lift.ToolWrapper, "run", _make_fake_picard_run(
+        clean_stderr="", raise_on_chroms=raise_on_chroms,
+    ))
+    monkeypatch.setattr(lift.ToolWrapper, "_check_version", lambda _self: None)
+
+
+def test_lift_and_transform_single_shard_sequential(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """S1: n_shards=1 short-circuits to sequential lift + transform.
+
+    Verifies that (a) the function returns (Stage1LiftCounters, Stage2TransformCounters)
+    and (b) the .snp + .bed are written and non-empty.
+    """
+    from pileup_aadr.counters import Stage1LiftCounters, Stage2TransformCounters
+
+    _setup_fake_picard(monkeypatch, tmp_path)
+
+    records = [("chr1", i * 1000, f"rs1_{i}") for i in range(1, 4)]
+    sites_vcf = tmp_path / "sites.vcf"
+    _make_sites_vcf(sites_vcf, records)
+    input_filters = Stage1InputFilters(0, 0, 0, rows_written=len(records))
+
+    snp_path = tmp_path / "out.snp"
+    bed_path = tmp_path / "out.bed"
+
+    s1, s2 = lift_and_transform_sharded(
+        sites_vcf_path=sites_vcf,
+        chain_path=tmp_path / "chain.gz",
+        target_fasta_path=tmp_path / "ref.fa",
+        output_lifted_vcf=tmp_path / "lifted.vcf",
+        output_rejected_vcf=tmp_path / "rejected.vcf",
+        output_snp_path=snp_path,
+        output_bed_path=bed_path,
+        input_filter_counters=input_filters,
+        shard_tempdir=tmp_path / "shards",
+        n_shards=1,
+    )
+
+    assert isinstance(s1, Stage1LiftCounters)
+    assert isinstance(s2, Stage2TransformCounters)
+    assert snp_path.exists() and snp_path.stat().st_size > 0
+    assert bed_path.exists() and bed_path.stat().st_size > 0
+    assert s2.output_sites == len(records)
+
+
+def test_lift_and_transform_sharded_logical_equivalence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """S2: streaming n_shards=2 produces same site set as single-shard run.
+
+    The fake Picard lifts records verbatim; transform writes .snp/.bed from each
+    shard's lifted VCF. After streaming, the merged .snp must contain the same
+    (rsid, chrom_numeric, pos) tuples as the single-shard run.
+    """
+    _setup_fake_picard(monkeypatch, tmp_path)
+
+    records = (
+        [("chr1", i * 1000, f"rs1_{i}") for i in range(1, 6)]
+        + [("chr22", i * 1000, f"rs22_{i}") for i in range(1, 4)]
+    )
+    input_filters = Stage1InputFilters(0, 0, 0, rows_written=len(records))
+
+    def _run(out_dir: Path, n_shards: int) -> set[tuple[str, str, str]]:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        sites_vcf = out_dir / "sites.vcf"
+        _make_sites_vcf(sites_vcf, records)
+        snp_path = out_dir / "out.snp"
+        bed_path = out_dir / "out.bed"
+        lift_and_transform_sharded(
+            sites_vcf_path=sites_vcf,
+            chain_path=out_dir / "chain.gz",
+            target_fasta_path=out_dir / "ref.fa",
+            output_lifted_vcf=out_dir / "lifted.vcf",
+            output_rejected_vcf=out_dir / "rejected.vcf",
+            output_snp_path=snp_path,
+            output_bed_path=bed_path,
+            input_filter_counters=input_filters,
+            shard_tempdir=out_dir / "shards",
+            n_shards=n_shards,
+        )
+        return {
+            tuple(line.split()[:4])  # rsid, chrom_num, gen, pos
+            for line in snp_path.read_text().splitlines()
+            if line.strip()
+        }
+
+    single = _run(tmp_path / "single", 1)
+    sharded = _run(tmp_path / "sharded", 2)
+    assert single == sharded, f"site sets differ: {single ^ sharded}"
+    assert len(single) == len(records)
+
+
+def test_lift_and_transform_sharded_snp_bed_line_counts_match(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """S3: merged .snp and .bed have identical line counts after streaming."""
+    _setup_fake_picard(monkeypatch, tmp_path)
+
+    records = (
+        [("chr1", i * 1000, f"rs1_{i}") for i in range(1, 8)]
+        + [("chr2", i * 1000, f"rs2_{i}") for i in range(1, 5)]
+        + [("chr22", i * 1000, f"rs22_{i}") for i in range(1, 4)]
+    )
+    input_filters = Stage1InputFilters(0, 0, 0, rows_written=len(records))
+    sites_vcf = tmp_path / "sites.vcf"
+    _make_sites_vcf(sites_vcf, records)
+    snp_path = tmp_path / "out.snp"
+    bed_path = tmp_path / "out.bed"
+
+    lift_and_transform_sharded(
+        sites_vcf_path=sites_vcf,
+        chain_path=tmp_path / "chain.gz",
+        target_fasta_path=tmp_path / "ref.fa",
+        output_lifted_vcf=tmp_path / "lifted.vcf",
+        output_rejected_vcf=tmp_path / "rejected.vcf",
+        output_snp_path=snp_path,
+        output_bed_path=bed_path,
+        input_filter_counters=input_filters,
+        shard_tempdir=tmp_path / "shards",
+        n_shards=3,
+    )
+
+    snp_lines = [l for l in snp_path.read_text().splitlines() if l.strip()]
+    bed_lines = [l for l in bed_path.read_text().splitlines() if l.strip()]
+    assert len(snp_lines) == len(bed_lines), (
+        f".snp has {len(snp_lines)} lines but .bed has {len(bed_lines)}"
+    )
+    assert len(snp_lines) == len(records)

@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import format_detect, lift, output, pileup_call, rejoin, sites_vcf, transform
+from . import format_detect, lift, output, pileup_call, rejoin, sites_vcf
 from .concurrency import output_lock, tempdir, warn_if_networked_fs
 from .counters import ExtractCounters
 from .dict_resolve import ensure_target_fasta_dict
@@ -246,30 +246,25 @@ def _run_stages(
     lifted_vcf = td_lift / "aadr_lifted.vcf"
     rejected_vcf = td_lift / "aadr_rejected.vcf"
     picard_shard_tempdir = td_lift / "picard_shards"
-    s1 = lift.lift_aadr_sites_sharded(
+    snp_path = td_transform / "aadr_hg38.snp"
+    bed_path = td_transform / "aadr_hg38.bed"
+    s1, s2 = lift.lift_and_transform_sharded(
         sites_vcf_path=sites_vcf_path,
         chain_path=chain, target_fasta_path=ref_fasta,
         output_lifted_vcf=lifted_vcf, output_rejected_vcf=rejected_vcf,
+        output_snp_path=snp_path, output_bed_path=bed_path,
         input_filter_counters=s1_input_filters,
         shard_tempdir=picard_shard_tempdir,
         n_shards=picard_shards,
+        alt_contig_filter=not args.keep_alt_contigs,
         picard_mem=args.picard_mem, picard_max_records=args.picard_max_records,
         yield_fail_pct=args.liftover_yield_fail_pct,
         yield_warn_pct=args.liftover_yield_warn_pct,
     )
 
-    # Start swap_lookup build in background immediately after Stage 1 so it
-    # overlaps with Stage 2 + Stage 3 (~30-40 min window).
+    # Start swap_lookup build in background after Stage 1+2 so it overlaps Stage 3.
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as swap_executor:
         swap_future = swap_executor.submit(rejoin.build_swap_lookup, lifted_vcf)
-
-        snp_path = td_transform / "aadr_hg38.snp"
-        bed_path = td_transform / "aadr_hg38.bed"
-        s2 = transform.build_pileupcaller_snp_and_bed(
-            lifted_vcf_path=lifted_vcf,
-            output_snp_path=snp_path, output_bed_path=bed_path,
-            alt_contig_filter=not args.keep_alt_contigs,
-        )
 
         shard_dir = td_call / "shards"
         shard_dir.mkdir(exist_ok=True)

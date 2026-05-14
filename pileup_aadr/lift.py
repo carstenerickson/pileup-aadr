@@ -25,7 +25,7 @@ from typing import Any, Final
 
 import pysam
 
-from .counters import Stage1InputFilters, Stage1LiftCounters
+from .counters import Stage1InputFilters, Stage1LiftCounters, Stage2TransformCounters
 from .errors import (
     ChainFileNotFound,
     ChainFileSHAError,
@@ -685,6 +685,166 @@ def lift_aadr_sites_sharded(
     )
 
 
+def lift_and_transform_sharded(
+    sites_vcf_path: Path,
+    chain_path: Path,
+    target_fasta_path: Path,
+    output_lifted_vcf: Path,
+    output_rejected_vcf: Path,
+    output_snp_path: Path,
+    output_bed_path: Path,
+    input_filter_counters: Stage1InputFilters,
+    shard_tempdir: Path,
+    n_shards: int,
+    *,
+    alt_contig_filter: bool = True,
+    picard_mem: str = "3g",
+    picard_max_records: int = 100_000,
+    yield_fail_pct: float = 70.0,
+    yield_warn_pct: float = 95.0,
+) -> tuple[Stage1LiftCounters, Stage2TransformCounters]:
+    """Streaming Stage 1 + Stage 2: transform each shard as soon as Picard finishes it.
+
+    n_shards == 1: sequential lift then transform (byte-identical to calling them separately).
+    n_shards >  1: Picard shards run in parallel; as each shard completes its lifted VCF
+        is immediately submitted for Stage 2 transform while remaining Picard shards run.
+        Eliminates transform serialization latency (~transform_time * (1 - 1/n_shards)).
+
+    The concatenated lifted VCF (`output_lifted_vcf`) is still written for Stage 4's
+    swap-lookup build. Per-shard .snp/.bed fragments are concatenated into
+    `output_snp_path` / `output_bed_path` in shard_index order; Stage 3's
+    `build_shard_manifest` re-groups by chromosome, so global sort order is not required.
+    """
+    from . import transform as _transform  # local import avoids module-level cycle risk
+
+    if n_shards == 1:
+        s1 = lift_aadr_sites(
+            sites_vcf_path=sites_vcf_path,
+            chain_path=chain_path,
+            target_fasta_path=target_fasta_path,
+            output_lifted_vcf=output_lifted_vcf,
+            output_rejected_vcf=output_rejected_vcf,
+            input_filter_counters=input_filter_counters,
+            picard_mem=picard_mem,
+            picard_max_records=picard_max_records,
+            yield_fail_pct=yield_fail_pct,
+            yield_warn_pct=yield_warn_pct,
+        )
+        s2 = _transform.build_pileupcaller_snp_and_bed(
+            lifted_vcf_path=output_lifted_vcf,
+            output_snp_path=output_snp_path,
+            output_bed_path=output_bed_path,
+            alt_contig_filter=alt_contig_filter,
+        )
+        return s1, s2
+
+    manifest = build_picard_shard_manifest(sites_vcf_path, shard_tempdir, n_shards)
+    actual_shards = len(manifest)
+
+    def _run_shard(spec: PicardShardSpec) -> Stage1LiftCounters:
+        return lift_aadr_sites(
+            sites_vcf_path=spec.input_vcf,
+            chain_path=chain_path,
+            target_fasta_path=target_fasta_path,
+            output_lifted_vcf=spec.lifted_vcf,
+            output_rejected_vcf=spec.rejected_vcf,
+            input_filter_counters=input_filter_counters,
+            picard_mem=picard_mem,
+            picard_max_records=picard_max_records,
+            yield_fail_pct=0.0,
+            yield_warn_pct=0.0,
+        )
+
+    def _run_transform(spec: PicardShardSpec) -> Stage2TransformCounters:
+        snp_frag = spec.lifted_vcf.parent / "transform.snp"
+        bed_frag = spec.lifted_vcf.parent / "transform.bed"
+        return _transform.build_pileupcaller_snp_and_bed(
+            lifted_vcf_path=spec.lifted_vcf,
+            output_snp_path=snp_frag,
+            output_bed_path=bed_frag,
+            alt_contig_filter=alt_contig_filter,
+        )
+
+    per_shard_s1: dict[int, Stage1LiftCounters] = {}
+    per_shard_s2: dict[int, Stage2TransformCounters] = {}
+    transform_futures: dict[concurrent.futures.Future[Stage2TransformCounters], PicardShardSpec] = {}
+
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=actual_shards, thread_name_prefix="picard-shard"
+    ) as executor:
+        picard_futures = {executor.submit(_run_shard, spec): spec for spec in manifest}
+        try:
+            for picard_future in concurrent.futures.as_completed(picard_futures):
+                spec = picard_futures[picard_future]
+                per_shard_s1[spec.shard_index] = picard_future.result()
+                log.debug(
+                    "Picard shard %d (%s) done: %.1fs — submitting Stage 2 transform",
+                    spec.shard_index, ", ".join(spec.source_chroms),
+                    per_shard_s1[spec.shard_index].wallclock_seconds,
+                )
+                transform_futures[executor.submit(_run_transform, spec)] = spec
+        except Exception:
+            executor.shutdown(wait=True, cancel_futures=True)
+            raise
+
+        try:
+            for t_future in concurrent.futures.as_completed(transform_futures):
+                spec = transform_futures[t_future]
+                per_shard_s2[spec.shard_index] = t_future.result()
+                log.debug(
+                    "Stage 2 transform shard %d done: %.1fs",
+                    spec.shard_index, per_shard_s2[spec.shard_index].wallclock_seconds,
+                )
+        except Exception:
+            executor.shutdown(wait=True, cancel_futures=True)
+            raise
+
+    concat_picard_outputs(manifest, output_lifted_vcf, output_rejected_vcf)
+
+    combined_stderr = output_lifted_vcf.parent / "picard.stderr"
+    with open(combined_stderr, "w") as out_stderr:
+        for shard in manifest:
+            if shard.stderr_path.exists():
+                out_stderr.write(
+                    f"# --- shard {shard.shard_index} "
+                    f"({', '.join(shard.source_chroms)}) ---\n"
+                )
+                out_stderr.write(shard.stderr_path.read_text())
+
+    output_snp_path.parent.mkdir(parents=True, exist_ok=True)
+    output_bed_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_snp_path, "w") as snp_out, open(output_bed_path, "w") as bed_out:
+        for shard in manifest:
+            snp_frag = shard.lifted_vcf.parent / "transform.snp"
+            bed_frag = shard.lifted_vcf.parent / "transform.bed"
+            if snp_frag.exists():
+                snp_out.write(snp_frag.read_text())
+            if bed_frag.exists():
+                bed_out.write(bed_frag.read_text())
+
+    ordered_s1 = [per_shard_s1[s.shard_index] for s in manifest]
+    s1 = aggregate_stage1_counters(
+        per_shard=ordered_s1,
+        input_filters=input_filter_counters,
+        yield_fail_pct=yield_fail_pct,
+        yield_warn_pct=yield_warn_pct,
+    )
+
+    ordered_s2 = [per_shard_s2[s.shard_index] for s in manifest]
+    s2 = Stage2TransformCounters(
+        wallclock_seconds=max(c.wallclock_seconds for c in ordered_s2),
+        alt_contig_drops=sum(c.alt_contig_drops for c in ordered_s2),
+        output_sites=sum(c.output_sites for c in ordered_s2),
+    )
+
+    log.info(
+        "Stage 1+2 streaming complete (%d shards): %d sites; "
+        "Stage 2 max shard wallclock %.2fs",
+        actual_shards, s2.output_sites, s2.wallclock_seconds,
+    )
+    return s1, s2
+
+
 def parse_picard_stderr(stderr_text: str) -> dict[str, int]:
     """Extract structured counters from Picard LiftoverVcf stderr.
 
@@ -779,6 +939,7 @@ __all__ = [
     "concat_picard_outputs",
     "get_bundled_chain_path",
     "lift_aadr_sites",
+    "lift_and_transform_sharded",
     "lift_aadr_sites_sharded",
     "parse_picard_stderr",
     "parse_rejected_vcf",
