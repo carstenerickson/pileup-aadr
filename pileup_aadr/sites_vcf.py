@@ -31,6 +31,7 @@ log = logging.getLogger(__name__)
 _PALINDROMES: Final[frozenset[tuple[str, str]]] = frozenset(
     {("A", "T"), ("T", "A"), ("C", "G"), ("G", "C")}
 )
+_ACGT: Final[frozenset[str]] = frozenset("ACGT")
 
 
 def build_sites_vcf(
@@ -61,37 +62,42 @@ def build_sites_vcf(
         Stage1InputFilters: counts dropped per filter + rows written.
     """
     chrom_lengths = HG19_CHROM_LENGTHS if aadr_build == "hg19" else HG38_CHROM_LENGTHS
-    # AADR through v66 is hg19-native, so v0.1 always sees aadr_build="hg19" in practice.
-    # The hg38 branch is here for v0.2 forward-compat (no-cost switch table).
 
-    palindrome_drops = 0
+    # Vectorized filter pass — avoids 1.2M pandas.Series allocations from iterrows
+    chrom_chr_series = aadr_df["chrom_int"].map(normalize_chrom)
+    valid_chrom_mask = chrom_chr_series.notna() & chrom_chr_series.isin(chrom_lengths)
+
+    snp_ok = pd.Series(True, index=aadr_df.index)
     non_snp_drops = 0
-    chroms_present: set[str] = set()
-    rows_to_write: list[tuple[str, int, str, str, str]] = []
+    if non_snp_filter:
+        snp_ok = (
+            (aadr_df["ref"].str.len() == 1) & aadr_df["ref"].isin(_ACGT) &
+            (aadr_df["alt"].str.len() == 1) & aadr_df["alt"].isin(_ACGT)
+        )
+        non_snp_drops = int((valid_chrom_mask & ~snp_ok).sum())
 
-    # Pass 1: filter + collect chrom set
-    for rsid, row in aadr_df.iterrows():
-        chrom = normalize_chrom(row["chrom_int"])
-        if chrom is None or chrom not in chrom_lengths:
-            log.debug("Skipping rsid=%s with unrecognized chrom %r", rsid, row["chrom_int"])
-            continue
-        ref, alt = row["ref"], row["alt"]
-        if non_snp_filter and (
-            len(ref) != 1 or len(alt) != 1 or ref not in "ACGT" or alt not in "ACGT"
-        ):
-            non_snp_drops += 1
-            continue
-        if palindrome_filter and (ref, alt) in _PALINDROMES:
-            palindrome_drops += 1
-            continue
-        rows_to_write.append((chrom, int(row["pos_bp"]), str(rsid), ref, alt))
-        chroms_present.add(chrom)
+    pal_mask = pd.Series(False, index=aadr_df.index)
+    palindrome_drops = 0
+    if palindrome_filter:
+        pal_mask = (
+            ((aadr_df["ref"] == "A") & (aadr_df["alt"] == "T")) |
+            ((aadr_df["ref"] == "T") & (aadr_df["alt"] == "A")) |
+            ((aadr_df["ref"] == "C") & (aadr_df["alt"] == "G")) |
+            ((aadr_df["ref"] == "G") & (aadr_df["alt"] == "C"))
+        )
+        palindrome_drops = int((valid_chrom_mask & snp_ok & pal_mask).sum())
 
-    # Sort: chrom (per CHROM_ORDER) then pos
-    chrom_index = {c: i for i, c in enumerate(CHROM_ORDER)}
-    rows_to_write.sort(key=lambda r: (chrom_index[r[0]], r[1]))
+    write_mask = valid_chrom_mask & snp_ok & ~pal_mask
 
-    # Pass 2: write VCF v4.2
+    # Add sort key column (non-underscore name; itertuples renames _foo → _N)
+    chrom_order_map = {c: i for i, c in enumerate(CHROM_ORDER)}
+    filtered = aadr_df[write_mask].copy()
+    filtered["chrom_chr_helper"] = chrom_chr_series[write_mask].values
+    filtered["chrom_sort_key_helper"] = filtered["chrom_chr_helper"].map(chrom_order_map)
+    filtered.sort_values(["chrom_sort_key_helper", "pos_bp"], inplace=True)
+
+    chroms_present: set[str] = set(filtered["chrom_chr_helper"].unique())
+
     rows_written = 0
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w") as out:
@@ -104,8 +110,12 @@ def build_sites_vcf(
             'Description="AADR original SNP name (rsID); preserved through Picard lift">\n'
         )
         out.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n")
-        for chrom, pos, rsid, ref, alt in rows_to_write:
-            out.write(f"{chrom}\t{pos}\t{rsid}\t{ref}\t{alt}\t.\tPASS\tAADR_RS={rsid}\n")
+        for row in filtered.itertuples():
+            chrom = row.chrom_chr_helper
+            rsid = row.Index
+            out.write(
+                f"{chrom}\t{row.pos_bp}\t{rsid}\t{row.ref}\t{row.alt}\t.\tPASS\tAADR_RS={rsid}\n"
+            )
             rows_written += 1
 
     log.info(

@@ -221,6 +221,47 @@ def test_aadr_build_hg38_switches_chrom_lengths_table(tmp_path: Path) -> None:
     assert f"##contig=<ID=chr22,length={expected}>" in content
 
 
+def test_palindrome_count_excludes_indel_palindromes(tmp_path: Path) -> None:
+    """Indel-palindromes (AT/TA as len>1 or non-ACGT) count as non_snp_drops, not palindrome_drops."""
+    df = _df_from_rows([
+        # Genuine indel that looks palindromic — should be non_snp_drop, not palindrome_drop
+        ("rs_at_indel", "22", 0.0, 1000, "AT", "TA"),
+        # Genuine SNP palindrome — should be palindrome_drop
+        ("rs_at_snp", "22", 0.0, 2000, "A", "T"),
+        # Clean SNP — should pass through
+        ("rs_ag_snp", "22", 0.0, 3000, "A", "G"),
+    ])
+    counters = build_sites_vcf(df, tmp_path / "out.vcf", aadr_build="hg19")
+    assert counters.non_snp_drops == 1   # only the indel
+    assert counters.palindrome_drops == 1  # only the genuine SNP palindrome
+    assert counters.rows_written == 1
+
+
+def test_vectorized_filter_and_sort_multi_chrom(tmp_path: Path) -> None:
+    """Multi-chrom mix of indels/palindromes/valid rows: correct counts and CHROM_ORDER output."""
+    df = _df_from_rows([
+        ("rs_22_pal", "22", 0.0, 500, "C", "G"),    # palindrome
+        ("rs_22_snp", "22", 0.0, 100, "A", "G"),    # valid (early pos)
+        ("rs_1_indel", "1", 0.0, 200, "AC", "A"),   # non-SNP
+        ("rs_1_snp", "1", 0.0, 300, "C", "T"),      # valid
+        ("rs_2_snp", "2", 0.0, 400, "G", "A"),      # valid
+    ])
+    out_vcf = tmp_path / "out.vcf"
+    counters = build_sites_vcf(df, out_vcf, aadr_build="hg19")
+
+    assert counters.non_snp_drops == 1
+    assert counters.palindrome_drops == 1
+    assert counters.rows_written == 3
+
+    ids = [
+        line.split("\t")[2]
+        for line in out_vcf.read_text().splitlines()
+        if line and not line.startswith("#")
+    ]
+    # chr1 < chr2 < chr22 in CHROM_ORDER; within chr22 pos 100 only
+    assert ids == ["rs_1_snp", "rs_2_snp", "rs_22_snp"]
+
+
 def test_empty_input_writes_header_only(tmp_path: Path) -> None:
     """Empty AADR DataFrame → VCF with header but no data rows."""
     df = _df_from_rows([])

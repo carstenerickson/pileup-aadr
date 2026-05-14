@@ -8,7 +8,7 @@ Frozen dataclasses (the leaf counters) are constructed once and never mutated.
 `ExtractCounters` itself is mutable so the orchestrator can replace its `coverage`
 and `gates` fields after the gate-evaluation pass without rebuilding the whole tree.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -64,11 +64,32 @@ class PileupCallerSummary:
 
 
 @dataclass(frozen=True)
+class Stage3ShardCounters:
+    """Per-shard breakdown for Stage 3 fan-out (v0.3).
+
+    One entry per chromosome shard when --threads > 1. Empty list in the parent
+    Stage3CallCounters when --threads == 1 (no fan-out decomposition).
+    """
+
+    shard_index: int
+    chromosome: str
+    pileupcaller_summary: PileupCallerSummary
+    wallclock_seconds: float
+
+
+@dataclass(frozen=True)
 class Stage3CallCounters:
-    """Populated by `pileup_call.run_pileup_call()`."""
+    """Populated by `pileup_call.run_pileup_call_shards()`.
+
+    `per_shard` is empty for --threads 1 (no fan-out). When non-empty, the
+    aggregate `pileupcaller_summary` equals the call-weighted sum of per-shard
+    summaries; consumers should use the top-level summary, not recompute from
+    per_shard.
+    """
 
     wallclock_seconds: float
     pileupcaller_summary: PileupCallerSummary
+    per_shard: list[Stage3ShardCounters] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -126,5 +147,6 @@ __all__ = [
     "Stage1LiftCounters",
     "Stage2TransformCounters",
     "Stage3CallCounters",
+    "Stage3ShardCounters",
     "Stage4RejoinCounters",
 ]

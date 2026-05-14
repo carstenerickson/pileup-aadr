@@ -13,10 +13,12 @@ from typing import Any
 
 import pytest
 
+from pileup_aadr.counters import PileupCallerSummary, Stage3CallCounters
 from pileup_aadr.errors import PileupAadrInternalError, ToolSubprocessError
 from pileup_aadr.pileup_call import (
     parse_pileupcaller_stderr,
     run_pileup_call,
+    run_pileup_call_shards,
 )
 from pileup_aadr.tool_wrapper import ToolRunResult
 
@@ -218,51 +220,12 @@ def test_upstream_real_error_raises(
     assert "missing BAM index" in excinfo.value.why
 
 
-def test_threads_gt_1_warns_no_op(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Issue #2 regression: --threads > 1 logs a WARN that the flag is a no-op
-    (samtools mpileup is single-threaded — no `-@` flag in any release)."""
-    import logging
-    _setup_run_mocks(
-        monkeypatch, tmp_path,
-        upstream_exit=0, downstream_exit=0,
-        pileupcaller_stderr_text=(
-            FIXTURES_STDERR / "pileupcaller_clean.stderr"
-        ).read_text(),
-    )
-    caplog.set_level(logging.WARNING, logger="pileup_aadr.pileup_call")
-    run_pileup_call(threads=8, **_common_run_args(tmp_path))
-    assert any("--threads=8 ignored" in r.message for r in caplog.records)
-
-
-def test_threads_eq_1_silent(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """--threads=1 (the default) is silent — no spurious WARN log."""
-    import logging
-    _setup_run_mocks(
-        monkeypatch, tmp_path,
-        upstream_exit=0, downstream_exit=0,
-        pileupcaller_stderr_text=(
-            FIXTURES_STDERR / "pileupcaller_clean.stderr"
-        ).read_text(),
-    )
-    caplog.set_level(logging.WARNING, logger="pileup_aadr.pileup_call")
-    run_pileup_call(threads=1, **_common_run_args(tmp_path))
-    assert not any("ignored" in r.message for r in caplog.records)
-
-
 def test_samtools_args_never_include_dash_at(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     """Issue #2 regression: the constructed `samtools mpileup` argv MUST NOT
-    contain `-@` regardless of --threads value (mpileup rejects it)."""
+    contain `-@` (mpileup rejects it; v0.1.0-0.1.1 mistakenly passed it)."""
     captured: dict[str, list[str]] = {}
 
     def capture_pipe(
@@ -295,8 +258,187 @@ def test_samtools_args_never_include_dash_at(
     monkeypatch.setattr(pileup_call.ToolWrapper, "_check_version", lambda _self: None)
     monkeypatch.setattr(pileup_call.ToolWrapper, "pipe", capture_pipe)
 
-    for n in (1, 4, 16):
-        run_pileup_call(threads=n, **_common_run_args(tmp_path))
-        assert "-@" not in captured["upstream_args"], (
-            f"--threads={n} produced -@: {captured['upstream_args']}"
+    run_pileup_call(**_common_run_args(tmp_path))
+    assert "-@" not in captured["upstream_args"]
+
+
+def test_region_argument_appended_to_samtools_args(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """region='chr1' appears in the samtools mpileup argv (shard-scoped call)."""
+    captured: dict[str, list[str]] = {}
+
+    def capture_pipe(
+        self: object,
+        downstream: object,
+        *,
+        upstream_args: list[str],
+        downstream_args: list[str],
+        upstream_stderr_to: Path,
+        downstream_stderr_to: Path,
+    ) -> tuple[ToolRunResult, ToolRunResult]:
+        captured["upstream_args"] = upstream_args
+        upstream_stderr_to.parent.mkdir(parents=True, exist_ok=True)
+        upstream_stderr_to.write_text("")
+        downstream_stderr_to.write_text(
+            (FIXTURES_STDERR / "pileupcaller_clean.stderr").read_text()
         )
+        return (
+            ToolRunResult(exit_code=0, stdout=None, stderr_path=upstream_stderr_to,
+                          stderr_text=None, wallclock_seconds=0.1, peak_rss_mb=None),
+            ToolRunResult(exit_code=0, stdout=None, stderr_path=downstream_stderr_to,
+                          stderr_text=None, wallclock_seconds=0.1, peak_rss_mb=None),
+        )
+
+    from pileup_aadr import pileup_call as pc_mod
+    monkeypatch.setattr(pc_mod.ToolWrapper, "_resolve_binary",
+                        lambda _self, spec: Path(f"/usr/bin/fake_{spec.binary}"))
+    monkeypatch.setattr(pc_mod.ToolWrapper, "_check_version", lambda _self: None)
+    monkeypatch.setattr(pc_mod.ToolWrapper, "pipe", capture_pipe)
+
+    run_pileup_call(**_common_run_args(tmp_path), region="chr1")
+    assert "chr1" in captured["upstream_args"]
+
+
+# --- run_pileup_call_shards ---
+
+
+def _write_two_chrom_sites(snp_path: Path, bed_path: Path) -> None:
+    snp_path.parent.mkdir(parents=True, exist_ok=True)
+    snp_path.write_text("rs1\t1\t0.0\t1000\tA\tG\nrs22\t22\t0.0\t2000\tC\tT\n")
+    bed_path.write_text("chr1\t999\t1000\nchr22\t1999\t2000\n")
+
+
+def _make_fake_run_pileup_call(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    """Patch module-level run_pileup_call to write minimal shard outputs; return call log."""
+    from pileup_aadr import pileup_call as pc_mod
+
+    calls: list[dict] = []
+
+    def fake_run(**kwargs):  # type: ignore[no-untyped-def]
+        calls.append(dict(kwargs))
+        snp_lines = kwargs["snp_path"].read_text().splitlines()
+        op = kwargs["output_prefix"]
+        op.parent.mkdir(parents=True, exist_ok=True)
+        with open(f"{op}.geno", "w") as gh, open(f"{op}.snp", "w") as sh:
+            for line in snp_lines:
+                gh.write("0\n")
+                sh.write(line + "\n")
+        Path(f"{op}.ind").write_text(f"{kwargs['sample_name']}\tU\t{kwargs['pop_name']}\n")
+        return Stage3CallCounters(
+            wallclock_seconds=0.1,
+            pileupcaller_summary=PileupCallerSummary(
+                total_sites=len(snp_lines), non_missing_calls=len(snp_lines),
+                avg_raw_reads=5.0, avg_damage_cleaned_reads=5.0, avg_sampled_from=5.0,
+            ),
+        )
+
+    monkeypatch.setattr(pc_mod, "run_pileup_call", fake_run)
+    return calls
+
+
+def test_shards_threads1_single_process_no_fanout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """threads=1 → single run_pileup_call invocation, per_shard=[]."""
+    calls = _make_fake_run_pileup_call(monkeypatch)
+
+    snp = tmp_path / "sites.snp"
+    bed = tmp_path / "sites.bed"
+    _write_two_chrom_sites(snp, bed)
+
+    counters = run_pileup_call_shards(
+        bam_path=tmp_path / "user.bam",
+        sites_snp_path=snp, sites_bed_path=bed,
+        target_fasta_path=tmp_path / "ref.fa",
+        output_prefix=tmp_path / "call" / "out",
+        sample_name="S", pop_name="P",
+        shard_dir=tmp_path / "shards",
+        master_seed=42, threads=1,
+    )
+
+    assert len(calls) == 1
+    assert counters.per_shard == []
+    assert calls[0]["seed"] == 42
+    assert calls[0].get("region") is None
+
+
+def test_shards_threads2_fans_out_and_merges(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """threads=2 with 2 chromosomes → 2 per_shard entries, merged output."""
+    _make_fake_run_pileup_call(monkeypatch)
+
+    snp = tmp_path / "sites.snp"
+    bed = tmp_path / "sites.bed"
+    _write_two_chrom_sites(snp, bed)
+
+    counters = run_pileup_call_shards(
+        bam_path=tmp_path / "user.bam",
+        sites_snp_path=snp, sites_bed_path=bed,
+        target_fasta_path=tmp_path / "ref.fa",
+        output_prefix=tmp_path / "out",
+        sample_name="S", pop_name="P",
+        shard_dir=tmp_path / "shards",
+        master_seed=42, threads=2,
+    )
+
+    assert len(counters.per_shard) == 2
+    shard_chroms = {s.chromosome for s in counters.per_shard}
+    assert shard_chroms == {"chr1", "chr22"}
+    geno_lines = Path(f"{tmp_path / 'out'}.geno").read_text().splitlines()
+    assert len(geno_lines) == 2  # one per site
+
+
+def test_shards_failure_propagates(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Shard run_pileup_call failure → ToolSubprocessError propagated."""
+    from pileup_aadr import pileup_call as pc_mod
+
+    def fail_run(**_kw):  # type: ignore[no-untyped-def]
+        raise ToolSubprocessError(what="pileupCaller", why="shard crashed", fix="check logs")
+
+    monkeypatch.setattr(pc_mod, "run_pileup_call", fail_run)
+
+    snp = tmp_path / "sites.snp"
+    bed = tmp_path / "sites.bed"
+    snp.parent.mkdir(parents=True, exist_ok=True)
+    snp.write_text("rs1\t1\t0.0\t1000\tA\tG\n")
+    bed.write_text("chr1\t999\t1000\n")
+
+    with pytest.raises(ToolSubprocessError, match="shard crashed"):
+        run_pileup_call_shards(
+            bam_path=tmp_path / "user.bam",
+            sites_snp_path=snp, sites_bed_path=bed,
+            target_fasta_path=tmp_path / "ref.fa",
+            output_prefix=tmp_path / "out",
+            sample_name="S", pop_name="P",
+            shard_dir=tmp_path / "shards",
+            master_seed=42, threads=2,
+        )
+
+
+def test_shards_per_shard_region_matches_chromosome(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Each per-chromosome shard is called with its chromosome as the region arg."""
+    calls = _make_fake_run_pileup_call(monkeypatch)
+
+    snp = tmp_path / "sites.snp"
+    bed = tmp_path / "sites.bed"
+    _write_two_chrom_sites(snp, bed)
+
+    run_pileup_call_shards(
+        bam_path=tmp_path / "user.bam",
+        sites_snp_path=snp, sites_bed_path=bed,
+        target_fasta_path=tmp_path / "ref.fa",
+        output_prefix=tmp_path / "out",
+        sample_name="S", pop_name="P",
+        shard_dir=tmp_path / "shards",
+        master_seed=42, threads=2,
+    )
+
+    regions = {c.get("region") for c in calls}
+    assert regions == {"chr1", "chr22"}

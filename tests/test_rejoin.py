@@ -13,6 +13,8 @@ import pytest
 
 from pileup_aadr.errors import PileupAadrInternalError
 from pileup_aadr.rejoin import (
+    AADR_LOOKUP_FIELDS,
+    AadrLookup,
     GENO_HET,
     GENO_HOM_ALT,
     GENO_HOM_REF,
@@ -20,6 +22,8 @@ from pileup_aadr.rejoin import (
     SWAP_DOSAGE,
     RejoinOutput,
     _no_lift_fast_path_finalize,
+    build_merged_lookup,
+    build_swap_lookup,
     rejoin_aadr_frame,
 )
 
@@ -83,6 +87,12 @@ def _write_lifted_vcf(
     path.write_text("\n".join(lines) + "\n")
 
 
+def _make_lookup(aadr: pd.DataFrame, lifted_vcf: Path) -> AadrLookup:
+    """Build AadrLookup from a DataFrame + lifted VCF (test helper)."""
+    swap = build_swap_lookup(lifted_vcf)
+    return build_merged_lookup(aadr, swap)
+
+
 # --- SWAP_DOSAGE table ---
 
 
@@ -119,7 +129,7 @@ def test_passthrough_no_swap_writes_eigenstrat_triplet(tmp_path: Path) -> None:
 
     out_prefix = tmp_path / "out" / "carsten_pseudohaploid"
     result = rejoin_aadr_frame(
-        pc_prefix, aadr, lifted_vcf, out_prefix, "Carsten", "TestPop"
+        pc_prefix, _make_lookup(aadr, lifted_vcf), out_prefix, "Carsten", "TestPop"
     )
 
     assert isinstance(result, RejoinOutput)
@@ -143,7 +153,7 @@ def test_output_snp_uses_aadr_hg19_coords(tmp_path: Path) -> None:
     _write_lifted_vcf(lifted_vcf, [("chr1", 5_000_000, "rs1", "A", "G", False)])
 
     out_prefix = tmp_path / "out"
-    rejoin_aadr_frame(pc_prefix, aadr, lifted_vcf, out_prefix, "S", "P")
+    rejoin_aadr_frame(pc_prefix, _make_lookup(aadr, lifted_vcf), out_prefix, "S", "P")
 
     snp_line = (out_prefix.with_suffix(".snp")).read_text().splitlines()[0]
     parts = snp_line.split("\t")
@@ -159,7 +169,7 @@ def test_ind_file_written_with_user_sex(tmp_path: Path) -> None:
     _write_lifted_vcf(lifted_vcf, [("chr1", 5000, "rs1", "A", "G", False)])
 
     out_prefix = tmp_path / "out"
-    rejoin_aadr_frame(pc_prefix, aadr, lifted_vcf, out_prefix, "Carsten", "TestPop", sex="M")
+    rejoin_aadr_frame(pc_prefix, _make_lookup(aadr, lifted_vcf), out_prefix, "Carsten", "TestPop", sex="M")
 
     ind = out_prefix.with_suffix(".ind").read_text().rstrip("\n")
     assert ind == "Carsten\tM\tTestPop"
@@ -194,7 +204,7 @@ def test_swap_inverts_dosage(tmp_path: Path) -> None:
     ])
 
     out_prefix = tmp_path / "out"
-    result = rejoin_aadr_frame(pc_prefix, aadr, lifted_vcf, out_prefix, "S", "P")
+    result = rejoin_aadr_frame(pc_prefix, _make_lookup(aadr, lifted_vcf), out_prefix, "S", "P")
 
     geno_lines = out_prefix.with_suffix(".geno").read_text().splitlines()
     # 0->2 (swap), 1->1, 2->0 (swap), 9->9
@@ -219,7 +229,7 @@ def test_swap_flag_but_alleles_dont_swap_drops_with_warning(
     caplog.set_level(logging.WARNING, logger="pileup_aadr.rejoin")
 
     out_prefix = tmp_path / "out"
-    result = rejoin_aadr_frame(pc_prefix, aadr, lifted_vcf, out_prefix, "S", "P")
+    result = rejoin_aadr_frame(pc_prefix, _make_lookup(aadr, lifted_vcf), out_prefix, "S", "P")
 
     assert result.stage_4_counters.allele_mismatch_drops == 1
     assert result.stage_4_counters.output_variants == 0
@@ -239,7 +249,7 @@ def test_no_swap_flag_but_alleles_differ_drops_with_warning(
     caplog.set_level(logging.WARNING, logger="pileup_aadr.rejoin")
 
     out_prefix = tmp_path / "out"
-    result = rejoin_aadr_frame(pc_prefix, aadr, lifted_vcf, out_prefix, "S", "P")
+    result = rejoin_aadr_frame(pc_prefix, _make_lookup(aadr, lifted_vcf), out_prefix, "S", "P")
 
     assert result.stage_4_counters.allele_mismatch_drops == 1
     assert result.stage_4_counters.output_variants == 0
@@ -264,7 +274,7 @@ def test_rsid_in_pc_output_missing_from_aadr_skipped(
     caplog.set_level(logging.WARNING, logger="pileup_aadr.rejoin")
 
     out_prefix = tmp_path / "out"
-    result = rejoin_aadr_frame(pc_prefix, aadr, lifted_vcf, out_prefix, "S", "P")
+    result = rejoin_aadr_frame(pc_prefix, _make_lookup(aadr, lifted_vcf), out_prefix, "S", "P")
 
     assert result.stage_4_counters.rsid_matched == 1
     assert result.stage_4_counters.output_variants == 1
@@ -284,7 +294,7 @@ def test_malformed_snp_row_raises(tmp_path: Path) -> None:
 
     out_prefix = tmp_path / "out"
     with pytest.raises(PileupAadrInternalError, match="6 cols"):
-        rejoin_aadr_frame(pc_prefix, aadr, lifted_vcf, out_prefix, "S", "P")
+        rejoin_aadr_frame(pc_prefix, _make_lookup(aadr, lifted_vcf), out_prefix, "S", "P")
 
 
 # --- Coverage counters ---
@@ -314,7 +324,7 @@ def test_coverage_fraction_uses_autosomes_only(tmp_path: Path) -> None:
     ])
 
     out_prefix = tmp_path / "out"
-    result = rejoin_aadr_frame(pc_prefix, aadr, lifted_vcf, out_prefix, "S", "P")
+    result = rejoin_aadr_frame(pc_prefix, _make_lookup(aadr, lifted_vcf), out_prefix, "S", "P")
 
     cov = result.coverage_counters
     assert cov.non_missing_autosomal_calls == 2
@@ -348,7 +358,7 @@ def test_emit_per_variant_rows_populates_report(tmp_path: Path) -> None:
 
     out_prefix = tmp_path / "out"
     result = rejoin_aadr_frame(
-        pc_prefix, aadr, lifted_vcf, out_prefix, "S", "P",
+        pc_prefix, _make_lookup(aadr, lifted_vcf), out_prefix, "S", "P",
         emit_per_variant_rows=True,
     )
 
@@ -377,7 +387,7 @@ def test_sidecar_pseudohaploid_classification(tmp_path: Path) -> None:
     ])
 
     out_prefix = tmp_path / "out"
-    result = rejoin_aadr_frame(pc_prefix, aadr, lifted_vcf, out_prefix, "Carsten", "P")
+    result = rejoin_aadr_frame(pc_prefix, _make_lookup(aadr, lifted_vcf), out_prefix, "Carsten", "P")
 
     sc = result.pseudohaploid_sidecar
     assert sc["schema_version"] == 1
@@ -388,6 +398,50 @@ def test_sidecar_pseudohaploid_classification(tmp_path: Path) -> None:
     assert sample["het_rate"] == 0.5
     assert sample["calling_mode"] == "randomDiploid"
     assert "no-lift" not in sample["note"]
+
+
+# --- build_merged_lookup ---
+
+
+def test_build_merged_lookup_field_layout(tmp_path: Path) -> None:
+    """build_merged_lookup returns AadrLookup with correct tuple field order."""
+    aadr = _aadr_df([("rs1", "1", 0.123, 999_000, "A", "G")])
+    lifted_vcf = tmp_path / "lifted.vcf"
+    _write_lifted_vcf(lifted_vcf, [("chr1", 5000, "rs1", "A", "G", False)])
+    lookup = _make_lookup(aadr, lifted_vcf)
+
+    assert "rs1" in lookup
+    chrom_int, gen_morgans, pos_bp, ref, alt, is_swapped = lookup["rs1"]
+    assert chrom_int == "1"
+    assert gen_morgans == pytest.approx(0.123)
+    assert pos_bp == 999_000
+    assert ref == "A"
+    assert alt == "G"
+    assert is_swapped is False
+
+
+def test_build_merged_lookup_swap_default_false(tmp_path: Path) -> None:
+    """rsID not in lifted VCF → is_swapped defaults to False."""
+    aadr = _aadr_df([("rs_absent", "22", 0.0, 50_000, "C", "T")])
+    lifted_vcf = tmp_path / "lifted.vcf"
+    # Write a VCF with a *different* rsID so rs_absent is absent from swap_lookup
+    _write_lifted_vcf(lifted_vcf, [("chr1", 1000, "rs_other", "A", "G", True)])
+    lookup = _make_lookup(aadr, lifted_vcf)
+
+    assert "rs_absent" in lookup
+    assert lookup["rs_absent"][5] is False  # is_swapped
+
+
+def test_build_merged_lookup_empty_swap_lookup(tmp_path: Path) -> None:
+    """build_merged_lookup with an empty swap_lookup → all is_swapped=False."""
+    from pileup_aadr.rejoin import build_merged_lookup
+    aadr = _aadr_df([
+        ("rs1", "1", 0.0, 1000, "A", "G"),
+        ("rs2", "2", 0.0, 2000, "C", "T"),
+    ])
+    lookup = build_merged_lookup(aadr, {})
+    assert all(v[5] is False for v in lookup.values())
+    assert len(lookup) == 2
 
 
 # --- No-lift fast path ---

@@ -15,11 +15,13 @@ The CLI subcommand in `extract_cmd.py` is a thin click wrapper that constructs
 """
 from __future__ import annotations
 
+import concurrent.futures
 import dataclasses
 import hashlib
 import logging
 import os
 import time
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +60,14 @@ def run_extract(args: ExtractCliArgs) -> int:
             outer formatter. All other exceptions also propagate (formatted
             as crashes by `cli.py`).
     """
+    if args.no_thread_cap:
+        warnings.warn(
+            "--no-thread-cap is deprecated in v0.3 (Stage 3 fan-out replaces "
+            "per-thread samtools control); this flag will be removed in v0.4",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
     t_start = time.perf_counter()
 
     warn_if_networked_fs(args.output_prefix)
@@ -93,10 +103,6 @@ def run_extract(args: ExtractCliArgs) -> int:
         "no-lift fast path" if no_lift else "full lift path",
     )
 
-    # Picard's LiftoverVcf needs a sequence dictionary alongside the target
-    # FASTA. Auto-generate via Picard CreateSequenceDictionary if missing
-    # (one-time ~23s on hg38, cached). Skipped on the no-lift fast path since
-    # Picard isn't invoked there.
     if not no_lift:
         ensure_target_fasta_dict(ref_fasta)
 
@@ -106,6 +112,11 @@ def run_extract(args: ExtractCliArgs) -> int:
     if not no_lift:
         tool_versions["java"] = ToolWrapper(JAVA_SPEC).version()
         tool_versions["picard"] = ToolWrapper(PICARD_SPEC).version()
+
+    # Pre-compute panel classification + row count before _run_stages so we can
+    # del aadr_df after _run_stages returns (releases ~100MB before coverage gate).
+    aadr_total = len(aadr_df)
+    panel_class = format_detect.classify_aadr_chrom_set(aadr_df)
 
     try:
         with (
@@ -130,16 +141,16 @@ def run_extract(args: ExtractCliArgs) -> int:
                 td_lift=lift_dir, td_transform=transform_dir, td_call=call_dir,
             )
 
-        _evaluate_coverage_gate(
-            counters, args,
-            panel_class=format_detect.classify_aadr_chrom_set(aadr_df),
-        )
+        del aadr_df  # DataFrame consumed by _run_stages; panel_class already computed
+
+        _evaluate_coverage_gate(counters, args, panel_class=panel_class)
         counters = _finalize_counters(counters, time.perf_counter() - t_start)
 
         _write_outputs(
             args=args, counters=counters, rejoin_out=rejoin_out,
             bam_format=bam_format, bam_build=bam_build,
-            aadr_total=len(aadr_df), aadr_build=aadr_build,
+            aadr_total=aadr_total,
+            aadr_build=aadr_build,
             ref_fasta=ref_fasta, chain=chain,
             tool_versions=tool_versions,
         )
@@ -198,14 +209,17 @@ def _run_stages(
         snp_path = td_transform / "aadr_native.snp"
         bed_path = td_transform / "aadr_native.bed"
         _write_aadr_native_snp_and_bed(aadr_df, snp_path, bed_path)
-        s3_counters = pileup_call.run_pileup_call(
-            bam_path=args.bam, snp_path=snp_path, bed_path=bed_path,
+        shard_dir = td_call / "shards"
+        shard_dir.mkdir(exist_ok=True)
+        s3_counters = pileup_call.run_pileup_call_shards(
+            bam_path=args.bam, sites_snp_path=snp_path, sites_bed_path=bed_path,
             target_fasta_path=ref_fasta,
             output_prefix=td_call / "user_native",
             sample_name=sample_name, pop_name=pop_name,
-            seed=args.seed, threads=args.threads,
+            shard_dir=shard_dir,
+            master_seed=args.seed, threads=args.threads,
             min_mapq=args.min_mapq, min_baseq=args.min_baseq,
-            no_baq=args.no_baq, no_thread_cap=args.no_thread_cap,
+            no_baq=args.no_baq,
         )
         rejoin_out = rejoin._no_lift_fast_path_finalize(
             pileupcaller_eig_prefix=td_call / "user_native",
@@ -243,27 +257,40 @@ def _run_stages(
         yield_warn_pct=args.liftover_yield_warn_pct,
     )
 
-    snp_path = td_transform / "aadr_hg38.snp"
-    bed_path = td_transform / "aadr_hg38.bed"
-    s2 = transform.build_pileupcaller_snp_and_bed(
-        lifted_vcf_path=lifted_vcf,
-        output_snp_path=snp_path, output_bed_path=bed_path,
-        alt_contig_filter=not args.keep_alt_contigs,
-    )
+    # Start swap_lookup build in background immediately after Stage 1 so it
+    # overlaps with Stage 2 + Stage 3 (~30-40 min window).
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as swap_executor:
+        swap_future = swap_executor.submit(rejoin.build_swap_lookup, lifted_vcf)
 
-    s3 = pileup_call.run_pileup_call(
-        bam_path=args.bam, snp_path=snp_path, bed_path=bed_path,
-        target_fasta_path=ref_fasta,
-        output_prefix=td_call / "user_hg38",
-        sample_name=sample_name, pop_name=pop_name,
-        seed=args.seed, threads=args.threads,
-        min_mapq=args.min_mapq, min_baseq=args.min_baseq,
-        no_baq=args.no_baq, no_thread_cap=args.no_thread_cap,
-    )
+        snp_path = td_transform / "aadr_hg38.snp"
+        bed_path = td_transform / "aadr_hg38.bed"
+        s2 = transform.build_pileupcaller_snp_and_bed(
+            lifted_vcf_path=lifted_vcf,
+            output_snp_path=snp_path, output_bed_path=bed_path,
+            alt_contig_filter=not args.keep_alt_contigs,
+        )
+
+        shard_dir = td_call / "shards"
+        shard_dir.mkdir(exist_ok=True)
+        s3 = pileup_call.run_pileup_call_shards(
+            bam_path=args.bam, sites_snp_path=snp_path, sites_bed_path=bed_path,
+            target_fasta_path=ref_fasta,
+            output_prefix=td_call / "user_hg38",
+            sample_name=sample_name, pop_name=pop_name,
+            shard_dir=shard_dir,
+            master_seed=args.seed, threads=args.threads,
+            min_mapq=args.min_mapq, min_baseq=args.min_baseq,
+            no_baq=args.no_baq,
+        )
+
+        swap_lookup = swap_future.result()
+
+    aadr_lookup = rejoin.build_merged_lookup(aadr_df, swap_lookup)
+    del swap_lookup
 
     rejoin_out = rejoin.rejoin_aadr_frame(
         pileupcaller_eig_prefix=td_call / "user_hg38",
-        aadr_df=aadr_df, lifted_vcf_path=lifted_vcf,
+        aadr_lookup=aadr_lookup,
         output_prefix=args.output_prefix,
         sample_name=sample_name, pop_name=pop_name, sex=args.sex,
         emit_per_variant_rows=(args.report_tsv is not None),
@@ -366,6 +393,9 @@ def _write_outputs(
             k: (str(v) if isinstance(v, Path) else v)
             for k, v in config_dict.items()
         }
+        # v0.3 constants not in CLI args (fan-out strategy + seed derivation formula)
+        config_dict["fan_out_strategy"] = "per_chromosome"
+        config_dict["shard_seed_derivation"] = "master_seed * 1009 + shard_index"
         input_meta = {
             "bam_path": str(args.bam),
             "bam_format": bam_format,
@@ -448,26 +478,27 @@ def _write_aadr_native_snp_and_bed(
     chrom in `.snp`, chr-prefixed in BED) for consistency with the lift-path.
     """
     from .format_detect import normalize_chrom
-    from .transform import _CANONICAL_CHROM_RE, _CHROM_TO_NUMERIC
+    from .transform import _CHROM_TO_NUMERIC
+
+    chrom_chr_series = aadr_df["chrom_int"].map(normalize_chrom)
+    valid_mask = chrom_chr_series.notna() & chrom_chr_series.isin(_CHROM_TO_NUMERIC)
+
+    filtered = aadr_df[valid_mask].copy()
+    filtered["chrom_chr_helper"] = chrom_chr_series[valid_mask].values
+    filtered["chrom_numeric_helper"] = filtered["chrom_chr_helper"].map(_CHROM_TO_NUMERIC)
 
     snp_path.parent.mkdir(parents=True, exist_ok=True)
     bed_path.parent.mkdir(parents=True, exist_ok=True)
     n_written = 0
     with open(snp_path, "w") as snp_out, open(bed_path, "w") as bed_out:
-        for rsid, row in aadr_df.iterrows():
-            chrom_raw = row["chrom_int"]
-            chrom_chr = normalize_chrom(chrom_raw)
-            if chrom_chr is None or _CANONICAL_CHROM_RE.match(chrom_chr) is None:
-                continue
-            chrom_numeric = _CHROM_TO_NUMERIC.get(chrom_chr)
-            if chrom_numeric is None:
-                continue
-            pos = int(row["pos_bp"])
+        for row in filtered.itertuples():
+            rsid = row.Index
+            pos = int(row.pos_bp)
             snp_out.write(
-                f"{rsid}\t{chrom_numeric}\t{row['gen_morgans']}\t{pos}\t"
-                f"{row['ref']}\t{row['alt']}\n"
+                f"{rsid}\t{row.chrom_numeric_helper}\t{row.gen_morgans}\t{pos}\t"
+                f"{row.ref}\t{row.alt}\n"
             )
-            bed_out.write(f"{chrom_chr}\t{pos - 1}\t{pos}\n")
+            bed_out.write(f"{row.chrom_chr_helper}\t{pos - 1}\t{pos}\n")
             n_written += 1
     log.info("Wrote no-lift fast-path .snp + BED: %d sites", n_written)
 

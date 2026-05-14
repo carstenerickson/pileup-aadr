@@ -24,7 +24,7 @@ from .counters import ExtractCounters
 
 log = logging.getLogger(__name__)
 
-JSON_REPORT_SCHEMA_VERSION = 1
+JSON_REPORT_SCHEMA_VERSION = 2
 PSEUDOHAPLOID_SIDECAR_SCHEMA_VERSION = 1
 
 
@@ -194,14 +194,21 @@ def write_stdout_summary(
     pc = s3.pileupcaller_summary
     minutes, seconds = divmod(s3.wallclock_seconds, 60)
     s3_time = f"{int(minutes)}m {int(seconds)}s"
+    n_shards = len(s3.per_shard)
+    shard_note = f" ({n_shards} shards)" if n_shards > 1 else ""
     out.write(
-        f"Stage 3 - samtools mpileup + pileupCaller --randomDiploid [{s3_time}]\n"
+        f"Stage 3 - samtools mpileup + pileupCaller --randomDiploid [{s3_time}{shard_note}]\n"
     )
     out.write("  pileupCaller stderr summary stats (parsed for JSON report):\n")
     out.write(f"    TotalSites:        {pc.total_sites:,}\n")
     out.write(f"    NonMissingCalls:   {pc.non_missing_calls:,}\n")
     out.write(f"    avgRawReads:       {pc.avg_raw_reads:.1f}\n")
-    out.write(f"    avgSampledFrom:    {pc.avg_sampled_from:.1f}\n\n")
+    out.write(f"    avgSampledFrom:    {pc.avg_sampled_from:.1f}\n")
+    if n_shards > 1:
+        out.write("  Per-shard wallclock:\n")
+        for shard in s3.per_shard:
+            out.write(f"    {shard.chromosome:<6}  {shard.wallclock_seconds:.1f}s\n")
+    out.write("\n")
 
     if counters.stage_4_rejoin is not None:
         s4 = counters.stage_4_rejoin

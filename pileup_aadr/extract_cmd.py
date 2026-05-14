@@ -114,14 +114,19 @@ from .types import ExtractCliArgs
 )
 @click.option(
     "--threads",
-    type=int,
+    type=click.IntRange(min=1),
     default=1,
-    help="samtools mpileup worker threads (default: 1; effective cap = 4 unless --no-thread-cap)",
+    help=(
+        "Number of parallel Stage 3 shards (default: 1 = single-process, "
+        "byte-identical to v0.2; N>1 splits by chromosome and runs N "
+        "concurrent samtools mpileup | pileupCaller processes)"
+    ),
 )
 @click.option(
     "--no-thread-cap",
     is_flag=True,
-    help="Disable the --threads automatic cap (mpileup is BAM-seek-bound on large BAMs)",
+    hidden=True,
+    help="Deprecated in v0.3; will be removed in v0.4",
 )
 @click.option("--min-mapq", type=int, default=30, help="mpileup -q (default: 30)")
 @click.option("--min-baseq", type=int, default=30, help="mpileup -Q (default: 30)")

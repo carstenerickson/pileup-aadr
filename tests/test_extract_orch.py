@@ -99,25 +99,28 @@ def _patch_pileup_call(
     *,
     total_sites: int,
     non_missing: int,
+    captured: dict[str, Any] | None = None,
 ) -> None:
-    """Replace `pileup_call.run_pileup_call` with a stub that writes a fake
+    """Replace `pileup_call.run_pileup_call_shards` with a stub that writes a fake
     pileupCaller triplet matching the input .snp + returns Stage3CallCounters."""
     from pileup_aadr import extract_orch
 
     def fake_run(
-        bam_path: Path, snp_path: Path, bed_path: Path,
+        bam_path: Path, sites_snp_path: Path, sites_bed_path: Path,
         target_fasta_path: Path, output_prefix: Path,
-        sample_name: str, pop_name: str, **_kw: Any,
+        sample_name: str, pop_name: str,
+        shard_dir: Path, master_seed: int,
+        **_kw: Any,
     ) -> Stage3CallCounters:
-        # Read the .snp the orchestrator wrote and emit a pileupCaller-shaped triplet
-        snp_lines = snp_path.read_text().splitlines()
+        if captured is not None:
+            captured["threads"] = _kw.get("threads", 1)
+        snp_lines = sites_snp_path.read_text().splitlines()
         output_prefix.parent.mkdir(parents=True, exist_ok=True)
         with (
             open(f"{output_prefix}.geno", "w") as gh,
             open(f"{output_prefix}.snp", "w") as sh,
         ):
             for i, line in enumerate(snp_lines):
-                # Alternate hom-ref / het for variety
                 gh.write((GENO_HOM_REF if i % 2 == 0 else GENO_HET) + "\n")
                 sh.write(line + "\n")
         Path(f"{output_prefix}.ind").write_text(
@@ -132,7 +135,7 @@ def _patch_pileup_call(
             ),
         )
 
-    monkeypatch.setattr(extract_orch.pileup_call, "run_pileup_call", fake_run)
+    monkeypatch.setattr(extract_orch.pileup_call, "run_pileup_call_shards", fake_run)
 
 
 # --- No-lift fast path: end-to-end ---
@@ -194,7 +197,7 @@ def test_no_lift_run_emits_json_report(no_lift_run_setup: dict[str, Path]) -> No
     run_extract(args)
 
     data = json.loads(report.read_text())
-    assert data["schema_version"] == 1
+    assert data["schema_version"] == 2
     assert data["stage_1_lift"] is None
     assert data["stage_2_transform"] is None
     assert data["stage_4_rejoin"] is None
@@ -428,3 +431,107 @@ def test_full_lift_path_dispatches_to_stage_1(
     # JSON report (sanity-check the dispatch happened by checking the .geno isn't
     # a byte-for-byte copy of the fast-path's output)
     assert (output_prefix.with_suffix(".geno")).exists()
+
+
+# --- v0.3 additions ---
+
+
+def test_no_thread_cap_emits_deprecation_warning(
+    no_lift_run_setup: dict[str, Path],
+) -> None:
+    """--no-thread-cap triggers a DeprecationWarning in v0.3."""
+    paths = no_lift_run_setup
+    args = ExtractCliArgs(
+        bam=paths["bam"], aadr_snp=paths["aadr"],
+        output_prefix=paths["tmp"] / "out",
+        ref_fasta=paths["fasta"], bam_build="hg19", aadr_build="hg19",
+        min_coverage=10, warn_coverage=20,
+        no_thread_cap=True,
+    )
+    import warnings
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        run_extract(args)
+    assert any(
+        issubclass(w.category, DeprecationWarning) and "--no-thread-cap" in str(w.message)
+        for w in caught
+    )
+
+
+def test_threads_forwarded_to_run_pileup_call_shards(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """--threads N is forwarded as threads=N to run_pileup_call_shards."""
+    bam = tmp_path / "user.bam"
+    _make_minimal_bam(bam, build="hg19")
+    aadr = tmp_path / "aadr.snp"
+    _make_aadr_snp(aadr, n_sites=10)
+    fasta = tmp_path / "hg19.fa"
+    _make_fasta(fasta, build="hg19")
+
+    _patch_binaries(monkeypatch)
+    captured: dict[str, Any] = {}
+    _patch_pileup_call(monkeypatch, total_sites=10, non_missing=8, captured=captured)
+
+    args = ExtractCliArgs(
+        bam=bam, aadr_snp=aadr,
+        output_prefix=tmp_path / "out",
+        ref_fasta=fasta, bam_build="hg19", aadr_build="hg19",
+        min_coverage=1, warn_coverage=1,
+        threads=4,
+    )
+    run_extract(args)
+    assert captured.get("threads") == 4
+
+
+def test_stage3_exception_propagates_from_run_extract(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """An exception raised by run_pileup_call_shards propagates out of run_extract."""
+    from pileup_aadr import extract_orch
+    from pileup_aadr.errors import ToolSubprocessError
+
+    bam = tmp_path / "user.bam"
+    _make_minimal_bam(bam, build="hg19")
+    aadr = tmp_path / "aadr.snp"
+    _make_aadr_snp(aadr, n_sites=10)
+    fasta = tmp_path / "hg19.fa"
+    _make_fasta(fasta, build="hg19")
+    _patch_binaries(monkeypatch)
+
+    def exploding_run(*_a: Any, **_kw: Any) -> Stage3CallCounters:
+        raise ToolSubprocessError(
+            what="samtools", why="simulated crash", fix="",
+        )
+
+    monkeypatch.setattr(extract_orch.pileup_call, "run_pileup_call_shards", exploding_run)
+
+    args = ExtractCliArgs(
+        bam=bam, aadr_snp=aadr,
+        output_prefix=tmp_path / "out",
+        ref_fasta=fasta, bam_build="hg19", aadr_build="hg19",
+        min_coverage=1, warn_coverage=1,
+    )
+    with pytest.raises(ToolSubprocessError):
+        run_extract(args)
+
+
+def test_no_lift_json_report_schema_version_and_fan_out_config(
+    no_lift_run_setup: dict[str, Path],
+) -> None:
+    """JSON report schema_version==2 and fan_out_strategy present in config."""
+    paths = no_lift_run_setup
+    report = paths["tmp"] / "report.json"
+    args = ExtractCliArgs(
+        bam=paths["bam"], aadr_snp=paths["aadr"],
+        output_prefix=paths["tmp"] / "out",
+        ref_fasta=paths["fasta"], bam_build="hg19", aadr_build="hg19",
+        min_coverage=10, warn_coverage=20,
+        report_json=report,
+    )
+    run_extract(args)
+
+    data = json.loads(report.read_text())
+    assert data["schema_version"] == 2
+    assert data["config"]["fan_out_strategy"] == "per_chromosome"
+    assert "shard_seed_derivation" in data["config"]

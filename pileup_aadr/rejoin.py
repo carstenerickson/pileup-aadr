@@ -45,6 +45,14 @@ _AUTOSOME_CHROMS: Final[frozenset[str]] = frozenset(f"chr{i}" for i in range(1, 
 
 _EIG_SNP_COLS: Final[int] = 6
 
+# Flat lookup dict field layout for Stage 4 hot loop (v0.3 item D).
+# {rsid: (chrom_int, gen_morgans, pos_bp, ref, alt, is_swapped)}
+AADR_LOOKUP_FIELDS: Final[tuple[str, ...]] = (
+    "chrom_int", "gen_morgans", "pos_bp", "ref", "alt", "is_swapped"
+)
+AadrLookupValue = tuple[str, float, int, str, str, bool]
+AadrLookup = dict[str, AadrLookupValue]
+
 
 @dataclass
 class RejoinOutput:
@@ -56,10 +64,59 @@ class RejoinOutput:
     pseudohaploid_sidecar: dict[str, Any] = field(default_factory=dict)
 
 
+def build_swap_lookup(lifted_vcf_path: Path) -> dict[str, bool]:
+    """Read Picard's lifted VCF and build {rsid: bool} for SwappedAlleles flag.
+
+    rsid comes from the AADR_RS INFO field (preserved through Picard's lift).
+    Called by the orchestrator after Stage 1; the result feeds build_merged_lookup
+    before Stage 4.
+    """
+    swap_map: dict[str, bool] = {}
+    with pysam.VariantFile(str(lifted_vcf_path)) as vcf:
+        for rec in vcf:
+            aadr_rs = rec.info.get("AADR_RS")
+            if not aadr_rs:
+                # Defensive: AADR_RS should always be present after Stage 1
+                continue
+            # SwappedAlleles is a Flag-type INFO field (no value, just present/absent)
+            swap_map[aadr_rs] = "SwappedAlleles" in rec.info
+    return swap_map
+
+
+def build_merged_lookup(
+    aadr_df: pd.DataFrame,
+    swap_lookup: dict[str, bool],
+) -> AadrLookup:
+    """Build flat {rsid: (chrom_int, gen_morgans, pos_bp, ref, alt, is_swapped)} dict.
+
+    Single itertuples pass over the 1.2M-row DataFrame; swap flags merged inline
+    from swap_lookup. Eliminates pandas .loc overhead and the separate swap_lookup
+    query from the Stage 4 hot loop.
+
+    Args:
+        aadr_df: AADR DataFrame with index=rsid.
+        swap_lookup: {rsid: bool} from build_swap_lookup (empty dict for no-lift path).
+
+    Returns:
+        AadrLookup ready for Stage 4's rejoin_aadr_frame.
+    """
+    lookup: AadrLookup = {}
+    for row in aadr_df.itertuples():
+        rsid = row.Index
+        lookup[rsid] = (
+            row.chrom_int,
+            row.gen_morgans,
+            row.pos_bp,
+            row.ref,
+            row.alt,
+            swap_lookup.get(rsid, False),
+        )
+    return lookup
+
+
 def rejoin_aadr_frame(
     pileupcaller_eig_prefix: Path,
-    aadr_df: pd.DataFrame,
-    lifted_vcf_path: Path,
+    aadr_lookup: AadrLookup,
     output_prefix: Path,
     sample_name: str,
     pop_name: str,
@@ -71,8 +128,8 @@ def rejoin_aadr_frame(
 
     Args:
         pileupcaller_eig_prefix: pileupCaller's <prefix> (reads .geno + .snp).
-        aadr_df: AADR DataFrame (loaded once by orchestrator; index=rsid).
-        lifted_vcf_path: Picard's OUTPUT (read for SwappedAlleles INFO via pysam).
+        aadr_lookup: flat lookup dict from build_merged_lookup (built by orchestrator
+            after Stage 3 so swap_lookup Future is resolved before this call).
         output_prefix: where to write final `<prefix>.{geno,snp,ind}`.
         sample_name: IID for output .ind.
         pop_name: POP for output .ind.
@@ -87,8 +144,6 @@ def rejoin_aadr_frame(
             fire — pileupCaller emits clean rows; defensive).
     """
     t0 = time.perf_counter()
-
-    swap_lookup = _build_swap_lookup(lifted_vcf_path)
 
     pc_geno_path = Path(f"{pileupcaller_eig_prefix}.geno")
     pc_snp_path = Path(f"{pileupcaller_eig_prefix}.snp")
@@ -126,9 +181,8 @@ def rejoin_aadr_frame(
                 )
             rsid, _, _, _, lifted_ref, lifted_alt = snp_parts
 
-            try:
-                aadr_row = aadr_df.loc[rsid]
-            except KeyError:
+            entry = aadr_lookup.get(rsid)
+            if entry is None:
                 # rsID in pileupCaller output but missing from AADR. Defensive:
                 # we built the .snp from AADR so this shouldn't happen, but a
                 # corrupt intermediate or upstream rename could trigger it.
@@ -137,14 +191,7 @@ def rejoin_aadr_frame(
                 )
                 continue
             rsid_matched += 1
-
-            aadr_chrom_int = aadr_row["chrom_int"]
-            aadr_gen = aadr_row["gen_morgans"]
-            aadr_pos = aadr_row["pos_bp"]
-            aadr_ref = aadr_row["ref"]
-            aadr_alt = aadr_row["alt"]
-
-            was_swapped = swap_lookup.get(rsid, False)
+            aadr_chrom_int, aadr_gen, aadr_pos, aadr_ref, aadr_alt, was_swapped = entry
 
             if was_swapped:
                 if not (lifted_ref == aadr_alt and lifted_alt == aadr_ref):
@@ -368,23 +415,6 @@ def _no_lift_fast_path_finalize(
     )
 
 
-def _build_swap_lookup(lifted_vcf_path: Path) -> dict[str, bool]:
-    """Read Picard's lifted VCF and build {rsid: bool} for SwappedAlleles flag.
-
-    rsid comes from the AADR_RS INFO field (preserved through Picard's lift).
-    """
-    swap_map: dict[str, bool] = {}
-    with pysam.VariantFile(str(lifted_vcf_path)) as vcf:
-        for rec in vcf:
-            aadr_rs = rec.info.get("AADR_RS")
-            if not aadr_rs:
-                # Defensive: AADR_RS should always be present after Stage 1
-                continue
-            # SwappedAlleles is a Flag-type INFO field (no value, just present/absent)
-            swap_map[aadr_rs] = "SwappedAlleles" in rec.info
-    return swap_map
-
-
 def _build_sidecar(
     *,
     sample_name: str,
@@ -418,6 +448,9 @@ def _build_sidecar(
 
 
 __all__ = [
+    "AADR_LOOKUP_FIELDS",
+    "AadrLookup",
+    "AadrLookupValue",
     "GENO_HET",
     "GENO_HOM_ALT",
     "GENO_HOM_REF",
@@ -425,5 +458,7 @@ __all__ = [
     "SWAP_DOSAGE",
     "RejoinOutput",
     "_no_lift_fast_path_finalize",
+    "build_merged_lookup",
+    "build_swap_lookup",
     "rejoin_aadr_frame",
 ]
