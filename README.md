@@ -38,29 +38,6 @@ External binaries needed by `extract`:
 
 Easiest install: `conda install -c bioconda samtools pileupcaller picard mosdepth`. The UCSC `hg19ToHg38.over.chain.gz` (~223 KB) is bundled with the package and SHA-verified at startup — no separate download needed.
 
-### Running the integration test suite locally
-
-`tests/integration/` runs against real binaries and skips silently when they're missing. To opt in locally, set the binary paths in your environment:
-
-```bash
-# Picard (homebrew install on macOS): the wrapper at /opt/homebrew/bin/picard exists
-# but the version probe needs the JAR + java on PATH directly.
-export PICARD_JAR=/opt/homebrew/Cellar/picard-tools/3.4.0/libexec/picard.jar
-export PATH=/opt/homebrew/opt/openjdk/bin:$PATH
-
-# pgen-samplebind (sister tool from the same author; install separately and
-# add its venv's bin to PATH). The integration tests need it on PATH.
-export PATH=/path/to/pgen-samplebind/.venv/bin:$PATH
-
-# AT2 (R package): install the production fork — upstream 2.0.10 doesn't
-# read pgen-samplebind's PFILE output cleanly:
-#   Rscript -e 'remotes::install_github("carstenerickson/admixtools", ref="production/v1.0")'
-
-pytest tests/integration/ -v
-```
-
-Without these, the unit suite (~230 tests) still runs and integration tests skip cleanly. CI's `bio-tools` job does this setup via bioconda automatically — local-only setup is for fast iteration without round-tripping through CI.
-
 ## Quickstart
 
 ```bash
@@ -222,6 +199,13 @@ The `<prefix>.pseudohaploid.json` sidecar is read by `pgen-samplebind` via [pgen
 | First tag         | Pending real-binary smoke test against captured baselines   |
 
 CHANGELOG tracks the day-by-day implementation progress with design-constraint references.
+
+## Contributing
+
+Dev install, integration-test setup, lint/typing, and the release process
+all live in [CONTRIBUTING.md](CONTRIBUTING.md). For a tour of the codebase
+itself — architecture, key contracts, common-task recipes — see
+[DEVELOPMENT.md](DEVELOPMENT.md). Issues and PRs welcome.
 
 ## License
 
