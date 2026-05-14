@@ -129,6 +129,59 @@ def test_extract_end_to_end(
     )
 
 
+@requires_samtools
+@requires_pileupcaller
+@requires_picard
+@pytest.mark.slow
+def test_extract_end_to_end_sharded(
+    hg38_chr22_fasta: Path,
+    hg38_chr22_bam: Path,
+    aadr_chr22_slice: Path,
+    tmp_path: Path,
+) -> None:
+    """L9: --picard-shards 4 produces logically equivalent output to single-shard.
+
+    Runs both modes on the same fixture and compares the sorted site sets
+    (rsid, chrom, pos tuples) from each .snp file. Byte-identity is not expected
+    — Picard shard ordering is non-deterministic — but every site in one run must
+    appear in the other.
+    """
+    def _run(out_prefix: Path, report: Path, picard_shards: int | None) -> set[tuple]:
+        args = ExtractCliArgs(
+            bam=hg38_chr22_bam,
+            aadr_snp=aadr_chr22_slice,
+            output_prefix=out_prefix,
+            ref_fasta=hg38_chr22_fasta,
+            bam_build="hg38",
+            aadr_build="hg19",
+            picard_mem="2g",
+            picard_shards=picard_shards,
+            report_json=report,
+            liftover_yield_fail_pct=1.0,
+            liftover_yield_warn_pct=50.0,
+            min_coverage=0,
+            warn_coverage=0,
+        )
+        exit_code = run_extract(args)
+        assert exit_code == 0, f"run_extract failed (picard_shards={picard_shards})"
+        snp_lines = Path(f"{out_prefix}.snp").read_text().splitlines()
+        return {
+            (parts[0], parts[1], parts[3])
+            for line in snp_lines
+            if (parts := line.split()) and len(parts) == 6
+        }
+
+    sites_single = _run(tmp_path / "single" / "out", tmp_path / "single.json", None)
+    sites_sharded = _run(tmp_path / "sharded" / "out", tmp_path / "sharded.json", 4)
+
+    assert sites_single == sites_sharded, (
+        f"site sets differ: single={len(sites_single)}, sharded={len(sites_sharded)}, "
+        f"only_in_single={sites_single - sites_sharded}, "
+        f"only_in_sharded={sites_sharded - sites_single}"
+    )
+    assert len(sites_single) > 0, "expected at least one lifted site"
+
+
 # --- Coverage subcommand (mosdepth real run) ---
 
 
