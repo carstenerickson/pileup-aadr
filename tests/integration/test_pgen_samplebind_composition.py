@@ -20,27 +20,9 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
-from typing import Any
-
 import pytest
 
 from pileup_aadr.rejoin import no_lift_fast_path_finalize
-
-
-def _build_minimal_aadr_df() -> Any:
-    """A 5-row chr1 AADR DataFrame for the rejoin no-lift path."""
-    import pandas as pd
-    rows = [
-        ("rs1", "1", 0.0, 1000, "A", "G"),
-        ("rs2", "1", 0.0, 2000, "C", "T"),
-        ("rs3", "1", 0.0, 3000, "A", "G"),
-        ("rs4", "1", 0.0, 4000, "C", "T"),
-        ("rs5", "1", 0.0, 5000, "A", "G"),
-    ]
-    df = pd.DataFrame(
-        rows, columns=["rsid", "chrom_int", "gen_morgans", "pos_bp", "ref", "alt"],
-    )
-    return df.set_index("rsid", verify_integrity=True)
 
 
 def _build_pc_triplet(prefix: Path) -> None:

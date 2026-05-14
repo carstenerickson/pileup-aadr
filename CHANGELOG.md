@@ -6,6 +6,55 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-05-14
+
+Chromosome fan-out for Stage 3 parallelism, flat-dict rejoin hot-path,
+vectorized pre-lift filter, concurrent swap-lookup build, and a
+post-implementation review pass that fixed 6 behavioral issues and 4
+style/naming issues found during code review.
+
+272 tests passing; ruff clean.
+
+### Added
+- **Per-chromosome Stage 3 fan-out** (`--threads N`). `run_pileup_call_shards`
+  partitions the Stage 2 `.snp`/`.bed` into per-chromosome shards, runs up to N
+  shards concurrently via `ThreadPoolExecutor`, then concatenates EIGENSTRAT
+  triplets in chromosome order. `--threads 1` (default) short-circuits to the
+  single-process path — byte-identical to v0.2 output. Per-shard counters flow
+  into `Stage3ShardCounters` and appear in the JSON report.
+- **Flat-dict AadrLookup for Stage 4 hot loop.** `build_merged_lookup` returns
+  `dict[rsid, (chrom_int, gen_morgans, pos_bp, ref, alt, is_swapped)]`; the
+  rejoin loop does a single `lookup[rsid]` dict hit instead of a pandas `.loc`
+  per row — eliminates the `SettingWithCopyWarning`-prone DataFrame lookup on
+  the hot path.
+- **Vectorized pre-lift filter** in `sites_vcf.build_sites_vcf`. Boolean-mask
+  filter replaces the per-row Python loop; `.itertuples()` write replaces
+  `.iterrows()`. `Stage1InputFilters` dataclass carries the per-reason drop
+  counts; stored directly as `Stage1LiftCounters.input_filters` (typed, not
+  `dict[str, int]`).
+- **Concurrent swap-lookup build.** `extract_orch` submits
+  `build_swap_lookup` to a `ThreadPoolExecutor` while Stage 2 runs; the future
+  is resolved before Stage 4.
+- **New `shard` module** (`ShardSpec`, `build_shard_manifest`,
+  `merge_shard_eigenstrat`) — all fan-out mechanics isolated from call logic.
+- **`no_lift_fast_path_finalize`** (renamed from `_no_lift_fast_path_finalize`,
+  made public). No longer takes `aadr_df`; coverage denominator derived from
+  the pileupCaller output traversal loop, consistent with the lift path.
+
+### Fixed
+- **`samtools mpileup` region ordering** — region argument was appended before
+  the BAM path, defeating BAM index seek optimization and causing samtools to
+  treat the chromosome name as a file. Now appended after BAM.
+- **`normalize_chrom` fallback** — unknown chrom integers used the raw numeric
+  string as the `per_chrom_call_count` key instead of a `chr`-prefixed key,
+  silently poisoning downstream `.get('chrX', 0)` lookups. Now falls back to
+  `f"chr{chrom_int}"`.
+- **No-lift coverage denominator** — used `aadr_df` row count instead of
+  pileupCaller output site count, producing inflated denominators when the two
+  differed. Now consistent with the lift path.
+- **Double regex search** in `parse_pileupcaller_stderr` — header pattern was
+  searched twice; collapsed to single assign-and-check.
+
 ## [0.2.0] — 2026-05-12
 
 Beta promotion. Six of the seven v0.2 items from the post-v0.1
