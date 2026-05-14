@@ -325,7 +325,6 @@ from pileup_aadr.lift import (  # noqa: E402
     lift_aadr_sites_sharded,
 )
 
-
 _VCF_HEADER = (
     "##fileformat=VCFv4.2\n"
     "##contig=<ID=chr1,length=249250621>\n"
@@ -444,15 +443,15 @@ def test_concat_picard_outputs_preserves_header(tmp_path: Path) -> None:
     concat_picard_outputs(specs, out_lifted, out_rejected)
 
     lifted_lines = out_lifted.read_text().splitlines()
-    header_count = sum(1 for l in lifted_lines if l.startswith("#"))
-    body_lines = [l for l in lifted_lines if not l.startswith("#")]
+    header_count = sum(1 for line in lifted_lines if line.startswith("#"))
+    body_lines = [line for line in lifted_lines if not line.startswith("#")]
     assert header_count == 2  # ##fileformat + #CHROM header from shard 0 only
     assert len(body_lines) == 2
     assert body_lines[0].startswith("chr1\t")
     assert body_lines[1].startswith("chr22\t")
 
     rej_lines = out_rejected.read_text().splitlines()
-    rej_body = [l for l in rej_lines if not l.startswith("#")]
+    rej_body = [line for line in rej_lines if not line.startswith("#")]
     assert len(rej_body) == 1  # only shard 0 had a rejected record
 
 
@@ -637,7 +636,7 @@ def test_sharded_lift_logical_equivalence(
 
     # 10 sites on chr1, 5 on chr2, 3 on chr22
     records = (
-        [(f"chr1", i * 1000, f"rs1_{i}") for i in range(1, 11)]
+        [("chr1", i * 1000, f"rs1_{i}") for i in range(1, 11)]
         + [("chr2", i * 1000, f"rs2_{i}") for i in range(1, 6)]
         + [("chr22", i * 1000, f"rs22_{i}") for i in range(1, 4)]
     )
