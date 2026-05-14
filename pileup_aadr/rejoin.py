@@ -123,6 +123,7 @@ def rejoin_aadr_frame(
     *,
     sex: str = "U",
     emit_per_variant_rows: bool = False,
+    aadr_autosomal_count: int | None = None,
 ) -> RejoinOutput:
     """Rejoin pileupCaller output to AADR's hg19 frame; invert dosage at SwappedAlleles.
 
@@ -135,6 +136,9 @@ def rejoin_aadr_frame(
         pop_name: POP for output .ind.
         sex: SEX for output .ind ("M", "F", or "U"; default "U").
         emit_per_variant_rows: populate `RejoinOutput.per_variant_rows` for `--report-tsv`.
+        aadr_autosomal_count: pre-computed count of autosomal sites in the AADR panel
+            (rows where chrom_int in {"1".."22"}). If None, computed from per_chrom_total
+            after the walk (backward-compatible fallback for tests).
 
     Returns:
         RejoinOutput with counters + per-variant rows + sidecar dict.
@@ -153,7 +157,7 @@ def rejoin_aadr_frame(
     allele_mismatch_drops = 0
     output_variants = 0
     per_chrom_call_count: dict[str, int] = {}
-    per_chrom_total: dict[str, int] = {}
+    per_chrom_total: dict[str, int] = {}  # only used when aadr_autosomal_count is None
     het_count = 0
     non_missing_autosomal = 0
     per_variant_rows: list[dict[str, Any]] = []
@@ -258,11 +262,11 @@ def rejoin_aadr_frame(
     with open(out_ind_path, "w") as out_ind:
         out_ind.write(f"{sample_name}\t{sex}\t{pop_name}\n")
 
-    autosomal_aadr_count = sum(
+    _autosomal_denom = aadr_autosomal_count if aadr_autosomal_count is not None else sum(
         per_chrom_total.get(f"chr{i}", 0) for i in range(1, 23)
     )
     coverage_fraction = (
-        non_missing_autosomal / autosomal_aadr_count if autosomal_aadr_count else 0.0
+        non_missing_autosomal / _autosomal_denom if _autosomal_denom else 0.0
     )
 
     sidecar = _build_sidecar(
@@ -305,6 +309,7 @@ def no_lift_fast_path_finalize(
     *,
     sex: str = "U",
     emit_per_variant_rows: bool = False,
+    aadr_autosomal_count: int | None = None,
 ) -> RejoinOutput:
     """Finalizer for the no-lift fast path (AADR build == BAM build).
 
@@ -382,11 +387,11 @@ def no_lift_fast_path_finalize(
         no_lift=True,
     )
 
-    autosomal_aadr_count = sum(
+    _autosomal_denom = aadr_autosomal_count if aadr_autosomal_count is not None else sum(
         per_chrom_total.get(f"chr{i}", 0) for i in range(1, 23)
     )
     coverage_fraction = (
-        non_missing_autosomal / autosomal_aadr_count if autosomal_aadr_count else 0.0
+        non_missing_autosomal / _autosomal_denom if _autosomal_denom else 0.0
     )
 
     wallclock = time.perf_counter() - t0

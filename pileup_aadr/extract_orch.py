@@ -21,7 +21,6 @@ import hashlib
 import logging
 import os
 import time
-import warnings
 from pathlib import Path
 from typing import Any
 
@@ -60,14 +59,6 @@ def run_extract(args: ExtractCliArgs) -> int:
             outer formatter. All other exceptions also propagate (formatted
             as crashes by `cli.py`).
     """
-    if args.no_thread_cap:
-        warnings.warn(
-            "--no-thread-cap is deprecated in v0.3 (Stage 3 fan-out replaces "
-            "per-thread samtools control); this flag will be removed in v0.4",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-
     t_start = time.perf_counter()
 
     warn_if_networked_fs(args.output_prefix)
@@ -81,6 +72,8 @@ def run_extract(args: ExtractCliArgs) -> int:
 
     aadr_df = format_detect.parse_aadr_snp(args.aadr_snp)
     aadr_build = format_detect.detect_aadr_build(aadr_df, override=args.aadr_build)
+    _autosomal_chrom_set = frozenset(str(i) for i in range(1, 23))
+    aadr_autosomal_count = int((aadr_df["chrom_int"].isin(_autosomal_chrom_set)).sum())
 
     chain = chain_file_path(
         cli_chain=args.chain_path,
@@ -139,6 +132,7 @@ def run_extract(args: ExtractCliArgs) -> int:
                 chain=chain, ref_fasta=ref_fasta,
                 sample_name=sample_name, pop_name=pop_name, no_lift=no_lift,
                 td_lift=lift_dir, td_transform=transform_dir, td_call=call_dir,
+                aadr_autosomal_count=aadr_autosomal_count,
             )
 
         del aadr_df  # DataFrame consumed by _run_stages; panel_class already computed
@@ -195,6 +189,7 @@ def _run_stages(
     td_lift: Path,
     td_transform: Path,
     td_call: Path,
+    aadr_autosomal_count: int,
 ) -> tuple[ExtractCounters, rejoin.RejoinOutput]:
     """Execute Stages 1-4 (or just Stage 3 for the no-lift fast path).
 
@@ -226,6 +221,7 @@ def _run_stages(
             output_prefix=args.output_prefix,
             sample_name=sample_name, pop_name=pop_name, sex=args.sex,
             emit_per_variant_rows=(args.report_tsv is not None),
+            aadr_autosomal_count=aadr_autosomal_count,
         )
         counters = ExtractCounters(
             stage_1_lift=None, stage_2_transform=None,
@@ -293,6 +289,7 @@ def _run_stages(
         output_prefix=args.output_prefix,
         sample_name=sample_name, pop_name=pop_name, sex=args.sex,
         emit_per_variant_rows=(args.report_tsv is not None),
+        aadr_autosomal_count=aadr_autosomal_count,
     )
 
     counters = ExtractCounters(

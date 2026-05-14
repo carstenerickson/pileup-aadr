@@ -6,7 +6,9 @@ with clear errors per HLD §"Error class taxonomy".
 """
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Final, Literal
@@ -14,6 +16,7 @@ from typing import Final, Literal
 import pandas as pd
 import pysam
 
+from .chrom_lengths import CHROM_ORDER
 from .errors import (
     AADRDuplicateRsidError,
     AADRParseError,
@@ -24,6 +27,13 @@ from .errors import (
 )
 
 log = logging.getLogger(__name__)
+
+# Bump whenever the parse output schema changes (column set, dtypes, sort order).
+# Stale cache entries with a different version are automatically ignored (different filename).
+PARSE_SCHEMA_VERSION: Final[int] = 1
+
+# chr-prefixed chrom → sort position; used for pre-sorting parse output.
+_CHROM_SORT_MAP: Final[dict[str, int]] = {c: i for i, c in enumerate(CHROM_ORDER)}
 
 BuildOverride = Literal["hg19", "hg38", "auto"]
 
@@ -256,8 +266,18 @@ def _sanitize_iid(raw: str) -> str:
 _AADR_COLUMNS: Final[list[str]] = ["rsid", "chrom_int", "gen_morgans", "pos_bp", "ref", "alt"]
 
 
+def _aadr_cache_path(sha256: str) -> Path:
+    """XDG-respecting path for the schema-versioned feather cache of a parsed .snp."""
+    cache_home = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
+    return cache_home / "pileup-aadr" / "snp" / f"{sha256}.v{PARSE_SCHEMA_VERSION}.feather"
+
+
 def parse_aadr_snp(aadr_snp_path: Path) -> pd.DataFrame:
-    """Load AADR .snp into a DataFrame indexed by rsid.
+    """Load AADR .snp into a DataFrame indexed by rsid, sorted by (CHROM_ORDER, pos_bp).
+
+    Results are content-addressed cached as feather at
+    $XDG_CACHE_HOME/pileup-aadr/snp/<sha256>.v{PARSE_SCHEMA_VERSION}.feather.
+    Cache hits skip the parse + sort entirely (~3s → ~100ms on the 1.1M-site panel).
 
     Format (verified empirically v2.1):
         6 columns whitespace-separated (multi-space-padded for column alignment, NOT
@@ -267,18 +287,25 @@ def parse_aadr_snp(aadr_snp_path: Path) -> pd.DataFrame:
         aadr_snp_path: AADR .snp file
 
     Returns:
-        DataFrame with 6 typed columns + rsid index. dtypes:
+        DataFrame with 6 typed columns + rsid index, sorted by (CHROM_ORDER, pos_bp):
             rsid: str (index)
             chrom_int: str (kept as string to handle "1"-"22","23","24","90","91")
             gen_morgans: float
             pos_bp: int
             ref: str (single ACGT char)
             alt: str (single ACGT char)
+        Rows with chrom_int not in CHROM_ORDER sort to the end (stable).
 
     Raises:
         AADRParseError: row has wrong column count, non-ACGT alleles, or unparseable position
         AADRDuplicateRsidError: duplicate rsid in file (Stage 4 join requires unique IDs)
     """
+    sha256 = hashlib.sha256(aadr_snp_path.read_bytes()).hexdigest()
+    cache_path = _aadr_cache_path(sha256)
+    if cache_path.exists():
+        log.info("AADR .snp cache hit (v%d): %s", PARSE_SCHEMA_VERSION, cache_path)
+        return pd.read_feather(cache_path).set_index("rsid")
+
     rows: list[tuple[str, str, float, int, str, str]] = []
     with open(aadr_snp_path) as f:
         for lineno, line in enumerate(f, start=1):
@@ -329,10 +356,25 @@ def parse_aadr_snp(aadr_snp_path: Path) -> pd.DataFrame:
             fix="Verify AADR file integrity; AADR .snp must have unique SNP names",
         )
     df = df.set_index("rsid", verify_integrity=True)
+
+    # Sort by CHROM_ORDER x pos_bp so downstream consumers (sites_vcf, _write_aadr_native)
+    # get ordered output without re-sorting. chrom_int values not in CHROM_ORDER sort last.
+    chrom_rank = df["chrom_int"].map(normalize_chrom).map(_CHROM_SORT_MAP)
+    chrom_rank_filled = chrom_rank.fillna(len(CHROM_ORDER))
+    df = df.assign(_ck=chrom_rank_filled).sort_values(["_ck", "pos_bp"]).drop(columns="_ck")
+
     log.info(
         "Loaded AADR .snp: %d rows, %d unique chromosomes",
         len(df), df["chrom_int"].nunique(),
     )
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        df.reset_index().to_feather(cache_path)
+        log.info("AADR .snp cached (v%d): %s", PARSE_SCHEMA_VERSION, cache_path)
+    except Exception as exc:
+        log.debug("AADR parse cache write skipped: %s", exc)
+
     return df
 
 
@@ -457,6 +499,7 @@ __all__ = [
     "HG19_CHR20_LENGTH",
     "HG38_CHR1_LENGTH",
     "HG38_CHR20_LENGTH",
+    "PARSE_SCHEMA_VERSION",
     "BuildOverride",
     "classify_aadr_chrom_set",
     "detect_aadr_build",

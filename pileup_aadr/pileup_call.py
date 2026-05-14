@@ -13,6 +13,7 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import re
+import shutil
 import time
 from pathlib import Path
 from typing import Final
@@ -290,6 +291,10 @@ def run_pileup_call_shards(
             raise
 
     merge_shard_eigenstrat(manifest, output_prefix)
+
+    for shard in manifest:
+        shutil.rmtree(shard.bed_path.parent, ignore_errors=True)
+        log.debug("Cleaned shard dir: %s", shard.bed_path.parent)
 
     wall_total = time.perf_counter() - wall_t0
 

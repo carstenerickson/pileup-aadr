@@ -103,7 +103,6 @@
     "keep_palindromes": false,
     "keep_alt_contigs": false,
     "threads": 1,
-    "no_thread_cap": false,
     "min_mapq": 30,
     "min_baseq": 30,
     "no_baq": true,

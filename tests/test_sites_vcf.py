@@ -184,12 +184,17 @@ def test_unrecognized_chroms_silently_skipped(
     assert counters.palindrome_drops == 0
 
 
-def test_rows_sorted_by_chrom_then_pos(tmp_path: Path) -> None:
-    """Output VCF rows are sorted: chrom in CHROM_ORDER, pos ascending within chrom."""
+def test_rows_preserve_chrom_order_from_parse(tmp_path: Path) -> None:
+    """build_sites_vcf preserves input row order (sort contract is in parse_aadr_snp).
+
+    Input is pre-sorted as parse_aadr_snp guarantees (CHROM_ORDER x pos_bp); output
+    must preserve that order. chr2 before chr22 before chrX per CHROM_ORDER.
+    """
     df = _df_from_rows([
-        ("rs_22_late", "22", 0.0, 9000, "A", "G"),
-        ("rs_22_early", "22", 0.0, 1000, "A", "G"),
+        # pre-sorted: chr2 < chr22 < chrX, and within chr22 early < late
         ("rs_2_only", "2", 0.0, 5000, "A", "G"),
+        ("rs_22_early", "22", 0.0, 1000, "A", "G"),
+        ("rs_22_late", "22", 0.0, 9000, "A", "G"),
         ("rs_x_only", "23", 0.0, 7000, "A", "G"),
     ])
     out_vcf = tmp_path / "out.vcf"
@@ -200,7 +205,6 @@ def test_rows_sorted_by_chrom_then_pos(tmp_path: Path) -> None:
         for line in out_vcf.read_text().splitlines()
         if line and not line.startswith("#")
     ]
-    # CHROM_ORDER puts chr2 before chr22 before chrX
     assert data_lines == ["rs_2_only", "rs_22_early", "rs_22_late", "rs_x_only"]
 
 
@@ -238,13 +242,17 @@ def test_palindrome_count_excludes_indel_palindromes(tmp_path: Path) -> None:
 
 
 def test_vectorized_filter_and_sort_multi_chrom(tmp_path: Path) -> None:
-    """Multi-chrom mix of indels/palindromes/valid rows: correct counts and CHROM_ORDER output."""
+    """Multi-chrom mix of indels/palindromes/valid rows: correct counts and CHROM_ORDER output.
+
+    Input is pre-sorted as parse_aadr_snp guarantees (CHROM_ORDER x pos_bp within chrom).
+    """
     df = _df_from_rows([
-        ("rs_22_pal", "22", 0.0, 500, "C", "G"),    # palindrome
-        ("rs_22_snp", "22", 0.0, 100, "A", "G"),    # valid (early pos)
+        # pre-sorted: chr1 < chr2 < chr22
         ("rs_1_indel", "1", 0.0, 200, "AC", "A"),   # non-SNP
         ("rs_1_snp", "1", 0.0, 300, "C", "T"),      # valid
         ("rs_2_snp", "2", 0.0, 400, "G", "A"),      # valid
+        ("rs_22_snp", "22", 0.0, 100, "A", "G"),    # valid (early pos)
+        ("rs_22_pal", "22", 0.0, 500, "C", "G"),    # palindrome
     ])
     out_vcf = tmp_path / "out.vcf"
     counters = build_sites_vcf(df, out_vcf, aadr_build="hg19")

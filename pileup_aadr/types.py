@@ -42,7 +42,6 @@ class ExtractCliArgs:
 
     # Pileup / call
     threads: int = 1
-    no_thread_cap: bool = False
     min_mapq: int = 30
     min_baseq: int = 30
     no_baq: bool = False  # CLI flips --enable-baq → no_baq=False at the click layer

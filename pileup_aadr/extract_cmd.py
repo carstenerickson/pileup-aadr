@@ -122,12 +122,6 @@ from .types import ExtractCliArgs
         "concurrent samtools mpileup | pileupCaller processes)"
     ),
 )
-@click.option(
-    "--no-thread-cap",
-    is_flag=True,
-    hidden=True,
-    help="Deprecated in v0.3; will be removed in v0.4",
-)
 @click.option("--min-mapq", type=int, default=30, help="mpileup -q (default: 30)")
 @click.option("--min-baseq", type=int, default=30, help="mpileup -Q (default: 30)")
 @click.option(

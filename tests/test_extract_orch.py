@@ -439,28 +439,6 @@ def test_full_lift_path_dispatches_to_stage_1(
 # --- v0.3 additions ---
 
 
-def test_no_thread_cap_emits_deprecation_warning(
-    no_lift_run_setup: dict[str, Path],
-) -> None:
-    """--no-thread-cap triggers a DeprecationWarning in v0.3."""
-    paths = no_lift_run_setup
-    args = ExtractCliArgs(
-        bam=paths["bam"], aadr_snp=paths["aadr"],
-        output_prefix=paths["tmp"] / "out",
-        ref_fasta=paths["fasta"], bam_build="hg19", aadr_build="hg19",
-        min_coverage=10, warn_coverage=20,
-        no_thread_cap=True,
-    )
-    import warnings
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        run_extract(args)
-    assert any(
-        issubclass(w.category, DeprecationWarning) and "--no-thread-cap" in str(w.message)
-        for w in caught
-    )
-
-
 def test_threads_forwarded_to_run_pileup_call_shards(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:

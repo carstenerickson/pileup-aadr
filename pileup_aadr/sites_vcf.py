@@ -89,12 +89,9 @@ def build_sites_vcf(
 
     write_mask = valid_chrom_mask & snp_ok & ~pal_mask
 
-    # Add sort key column (non-underscore name; itertuples renames _foo → _N)
-    chrom_order_map = {c: i for i, c in enumerate(CHROM_ORDER)}
+    # parse_aadr_snp guarantees CHROM_ORDER x pos_bp sort; boolean indexing preserves row order.
     filtered = aadr_df[write_mask].copy()
     filtered["chrom_chr_helper"] = chrom_chr_series[write_mask].values
-    filtered["chrom_sort_key_helper"] = filtered["chrom_chr_helper"].map(chrom_order_map)
-    filtered.sort_values(["chrom_sort_key_helper", "pos_bp"], inplace=True)
 
     chroms_present: set[str] = set(filtered["chrom_chr_helper"].unique())
 

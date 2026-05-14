@@ -25,6 +25,7 @@ dependencies = [
     "pysam>=0.22,<1",
     "numpy>=1.26,<3",
     "packaging>=23.0",
+    "pyarrow>=13.0",
 ]
 
 [project.optional-dependencies]
