@@ -246,7 +246,8 @@ class ToolWrapper:
         cmd = self._build_invocation([*self.spec.version_args])
         try:
             r = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=30, check=False
+                cmd, capture_output=True, encoding="utf-8", errors="replace",
+                timeout=30, check=False
             )
         except subprocess.TimeoutExpired as e:
             raise self.spec.error_class_version(
