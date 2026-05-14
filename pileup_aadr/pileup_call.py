@@ -253,8 +253,13 @@ def run_pileup_call_shards(
         master_seed=master_seed,
     )
 
+    log.info(
+        "Stage 3: pileupCaller starting %d chromosome shards (%d threads)",
+        len(manifest), threads,
+    )
     wall_t0 = time.perf_counter()
     shard_results: dict[int, Stage3CallCounters] = {}
+    n_done = 0
 
     def _run_shard(spec: ShardSpec) -> tuple[ShardSpec, Stage3CallCounters]:
         return spec, run_pileup_call(
@@ -278,9 +283,10 @@ def run_pileup_call_shards(
             for future in concurrent.futures.as_completed(futures):
                 spec, shard_counters = future.result()
                 shard_results[spec.shard_index] = shard_counters
-                log.debug(
-                    "Shard %s done: %d / %d sites; wallclock %.1fs",
-                    spec.chromosome,
+                n_done += 1
+                log.info(
+                    "Stage 3 shard %d/%d (%s) done: %d/%d calls in %.1fs",
+                    n_done, len(manifest), spec.chromosome,
                     shard_counters.pileupcaller_summary.non_missing_calls,
                     shard_counters.pileupcaller_summary.total_sites,
                     shard_counters.wallclock_seconds,

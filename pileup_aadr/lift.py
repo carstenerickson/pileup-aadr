@@ -647,7 +647,12 @@ def lift_aadr_sites_sharded(
             yield_warn_pct=0.0,   # no per-shard warn
         )
 
+    log.info(
+        "Stage 1: lifting %d shards in parallel (%d chroms)",
+        actual_shards, sum(len(s.source_chroms) for s in manifest),
+    )
     per_shard_counters: dict[int, Stage1LiftCounters] = {}
+    n_done = 0
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=actual_shards, thread_name_prefix="picard-shard"
     ) as executor:
@@ -656,10 +661,12 @@ def lift_aadr_sites_sharded(
             for future in concurrent.futures.as_completed(futures):
                 spec = futures[future]
                 per_shard_counters[spec.shard_index] = future.result()
-                log.debug(
-                    "Picard shard %d (%s) done: %.1fs",
-                    spec.shard_index,
+                n_done += 1
+                log.info(
+                    "Stage 1 shard %d/%d (%s) done: %d sites lifted in %.1fs",
+                    n_done, actual_shards,
                     ", ".join(spec.source_chroms),
+                    per_shard_counters[spec.shard_index].lifted_sites,
                     per_shard_counters[spec.shard_index].wallclock_seconds,
                 )
         except Exception:
@@ -740,6 +747,10 @@ def lift_and_transform_sharded(
 
     manifest = build_picard_shard_manifest(sites_vcf_path, shard_tempdir, n_shards)
     actual_shards = len(manifest)
+    log.info(
+        "Stage 1+2: lifting %d shards in parallel (%d chroms)",
+        actual_shards, sum(len(s.source_chroms) for s in manifest),
+    )
 
     def _run_shard(spec: PicardShardSpec) -> Stage1LiftCounters:
         return lift_aadr_sites(
@@ -768,6 +779,8 @@ def lift_and_transform_sharded(
     per_shard_s1: dict[int, Stage1LiftCounters] = {}
     per_shard_s2: dict[int, Stage2TransformCounters] = {}
     transform_futures: dict[concurrent.futures.Future[Stage2TransformCounters], PicardShardSpec] = {}
+    n_lift_done = 0
+    n_transform_done = 0
 
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=actual_shards, thread_name_prefix="picard-shard"
@@ -777,9 +790,11 @@ def lift_and_transform_sharded(
             for picard_future in concurrent.futures.as_completed(picard_futures):
                 spec = picard_futures[picard_future]
                 per_shard_s1[spec.shard_index] = picard_future.result()
-                log.debug(
-                    "Picard shard %d (%s) done: %.1fs — submitting Stage 2 transform",
-                    spec.shard_index, ", ".join(spec.source_chroms),
+                n_lift_done += 1
+                log.info(
+                    "Stage 1 shard %d/%d (%s) done: %d sites lifted in %.1fs — queuing Stage 2",
+                    n_lift_done, actual_shards, ", ".join(spec.source_chroms),
+                    per_shard_s1[spec.shard_index].lifted_sites,
                     per_shard_s1[spec.shard_index].wallclock_seconds,
                 )
                 transform_futures[executor.submit(_run_transform, spec)] = spec
@@ -791,9 +806,12 @@ def lift_and_transform_sharded(
             for t_future in concurrent.futures.as_completed(transform_futures):
                 spec = transform_futures[t_future]
                 per_shard_s2[spec.shard_index] = t_future.result()
-                log.debug(
-                    "Stage 2 transform shard %d done: %.1fs",
-                    spec.shard_index, per_shard_s2[spec.shard_index].wallclock_seconds,
+                n_transform_done += 1
+                log.info(
+                    "Stage 2 shard %d/%d (%s) done: %d sites written in %.1fs",
+                    n_transform_done, actual_shards, ", ".join(spec.source_chroms),
+                    per_shard_s2[spec.shard_index].output_sites,
+                    per_shard_s2[spec.shard_index].wallclock_seconds,
                 )
         except Exception:
             executor.shutdown(wait=True, cancel_futures=True)
