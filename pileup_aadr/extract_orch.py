@@ -462,17 +462,6 @@ def _avail_memory_gb() -> float:
     return psutil.virtual_memory().available / (1024 ** 3)
 
 
-def _default_picard_shards(threads: int) -> int:
-    """Memory-aware default: cap Stage 1 parallelism so JVMs fit.
-
-    Each Picard JVM is ~3 GB heap; use up to 75% of available memory.
-    On a 16 GB Mac → cap=4. On a 64 GB cloud instance → cap=16.
-    """
-    avail_gb = _avail_memory_gb()
-    mem_cap = max(1, int(avail_gb * 0.75 / 3))
-    return min(threads, mem_cap)
-
-
 def _resolve_picard_shards(user_shards: int | None, threads: int) -> int:
     """Resolve final Picard shard count from user override and memory-aware default."""
     avail_gb = _avail_memory_gb()

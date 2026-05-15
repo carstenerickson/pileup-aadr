@@ -483,15 +483,23 @@ def concat_picard_outputs(
         (out_rejected, "rejected_vcf"),
     ]:
         with open(out_path, "w") as out:
-            for i, shard in enumerate(shards):
+            header_written = False
+            for shard in shards:
                 shard_path: Path = getattr(shard, vcf_attr)
                 if not shard_path.exists():
-                    continue
+                    raise PileupAadrInternalError(
+                        what="concat_picard_outputs",
+                        why=f"shard {shard.shard_index} output missing: {shard_path}",
+                        fix="Picard should have raised before reaching concat; check stderr",
+                    )
                 with open(shard_path) as vcf_in:
                     for line in vcf_in:
-                        if i > 0 and line.startswith("#"):
-                            continue  # header from shard 0 only
-                        out.write(line)
+                        if line.startswith("#"):
+                            if not header_written:
+                                out.write(line)
+                        else:
+                            header_written = True
+                            out.write(line)
 
 
 def aggregate_stage1_counters(
@@ -958,7 +966,7 @@ __all__ = [
     "get_bundled_chain_path",
     "lift_aadr_sites",
     "lift_and_transform_sharded",
-    "lift_aadr_sites_sharded",
+    "lift_aadr_sites_sharded",   # public: Stage 1 only (no transform); orchestrator uses lift_and_transform_sharded
     "parse_picard_stderr",
     "parse_rejected_vcf",
     "resolve_chain_for_extract",

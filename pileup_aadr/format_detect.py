@@ -402,10 +402,13 @@ def parse_aadr_snp(aadr_snp_path: Path) -> pd.DataFrame:
 
     if not cache_disabled:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = cache_path.with_suffix(".tmp")
         try:
-            df.reset_index().to_feather(cache_path)
+            df.reset_index().to_feather(tmp_path)
+            tmp_path.rename(cache_path)
             log.info("AADR .snp cached (v%d): %s", PARSE_SCHEMA_VERSION, cache_path)
         except Exception as exc:
+            tmp_path.unlink(missing_ok=True)
             log.debug("AADR parse cache write skipped: %s", exc)
 
     return df
