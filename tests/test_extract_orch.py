@@ -590,6 +590,7 @@ def test_picard_shards_user_override_with_warning(
 ) -> None:
     """L8: explicit --picard-shards N > mem_cap emits a WARNING but honours the override."""
     import logging
+
     import pileup_aadr.extract_orch as orch
 
     monkeypatch.setattr("pileup_aadr.extract_orch._avail_memory_gb", lambda: 3.0)

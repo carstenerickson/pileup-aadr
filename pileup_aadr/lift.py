@@ -965,8 +965,8 @@ __all__ = [
     "concat_picard_outputs",
     "get_bundled_chain_path",
     "lift_aadr_sites",
-    "lift_and_transform_sharded",
     "lift_aadr_sites_sharded",   # public: Stage 1 only (no transform); orchestrator uses lift_and_transform_sharded
+    "lift_and_transform_sharded",
     "parse_picard_stderr",
     "parse_rejected_vcf",
     "resolve_chain_for_extract",

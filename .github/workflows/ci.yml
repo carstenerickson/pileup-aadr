@@ -92,7 +92,11 @@ jobs:
         # to catch the smoke-test class of bug — which any compatible
         # version mix will surface.
         run: |
+          # `pip` is installed explicitly: the bioconda solve can land a python
+          # build without ensurepip, so a later `python -m pip install` fails with
+          # "No module named pip" unless pip is pulled into the env here.
           conda install -y -c bioconda -c conda-forge \
+            pip \
             'samtools>=1.16' \
             'sequencetools>=1.6.0' \
             'picard>=3.0' \

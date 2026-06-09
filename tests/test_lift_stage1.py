@@ -322,8 +322,8 @@ from pileup_aadr.lift import (  # noqa: E402
     aggregate_stage1_counters,
     build_picard_shard_manifest,
     concat_picard_outputs,
-    lift_and_transform_sharded,
     lift_aadr_sites_sharded,
+    lift_and_transform_sharded,
 )
 
 _VCF_HEADER = (
@@ -741,6 +741,7 @@ def _setup_fake_picard(
     """Patch ToolWrapper.run + subprocess.run for version probe."""
     import subprocess
     from unittest.mock import MagicMock
+
     from pileup_aadr import lift
 
     fake_jar = tmp_path / "picard.jar"
@@ -873,8 +874,8 @@ def test_lift_and_transform_sharded_snp_bed_line_counts_match(
         n_shards=3,
     )
 
-    snp_lines = [l for l in snp_path.read_text().splitlines() if l.strip()]
-    bed_lines = [l for l in bed_path.read_text().splitlines() if l.strip()]
+    snp_lines = [line for line in snp_path.read_text().splitlines() if line.strip()]
+    bed_lines = [line for line in bed_path.read_text().splitlines() if line.strip()]
     assert len(snp_lines) == len(bed_lines), (
         f".snp has {len(snp_lines)} lines but .bed has {len(bed_lines)}"
     )
