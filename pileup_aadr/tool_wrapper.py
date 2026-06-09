@@ -17,7 +17,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, ClassVar
+from typing import IO, Any, ClassVar
 
 from packaging.version import InvalidVersion, Version
 
@@ -25,6 +25,7 @@ from .errors import (
     JavaNotFoundError,
     MosdepthNotFoundError,
     PicardNotFoundError,
+    PileupAadrError,
     PileupCallerNotFoundError,
     SamtoolsNotFoundError,
     ToolSubprocessError,
@@ -43,8 +44,11 @@ class ToolSpec:
     version_regex: str
     min_version: str
     tested_against: str
-    error_class_missing: type[Exception]
-    error_class_version: type[Exception] = field(default=ToolVersionError)
+    # These hold PileupAadrError subclasses (Tool*NotFoundError / ToolVersionError),
+    # all of which take the structured what/why/fix kwargs — typed as the base so
+    # ToolWrapper can construct them with those kwargs.
+    error_class_missing: type[PileupAadrError]
+    error_class_version: type[PileupAadrError] = field(default=ToolVersionError)
     is_jar: bool = False
 
 
@@ -291,8 +295,8 @@ class ToolWrapper:
         args: list[str],
         *,
         jvm_args: list[str] | None = None,
-        stdin: int | IO | None = None,
-        stdout: int | IO | None = None,
+        stdin: int | IO[Any] | None = None,
+        stdout: int | IO[Any] | None = None,
         capture_stderr_to: Path,
         check: bool = True,
         timeout: float | None = None,

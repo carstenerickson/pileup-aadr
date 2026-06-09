@@ -36,6 +36,11 @@ dev = [
     "pytest-mock>=3.12",
     "mypy>=1.8",
     "ruff>=0.4",
+    "types-psutil",
+    # Pinned exactly: pandas-stubs is version-sensitive (itertuples/column typing
+    # shifts between releases), so float here would make `mypy` non-reproducible
+    # between local and CI. Bump deliberately alongside a mypy run.
+    "pandas-stubs==3.0.0.260204",
 ]
 
 [project.scripts]

@@ -40,7 +40,7 @@ from .types import CoverageCliArgs
     help="Emit structured JSON instead of TSV",
 )
 @click.pass_context
-def coverage(ctx: click.Context, **kwargs: Any) -> None:
+def coverage(ctx: click.Context, /, **kwargs: Any) -> None:
     """Per-chromosome BAM coverage report via mosdepth.
 
     BAM   Aligned BAM/CRAM file (must be indexed)

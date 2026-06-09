@@ -216,7 +216,7 @@ from .types import CALLING_MODES, ExtractCliArgs, mode_is_pseudohaploid
     help="Clean tempdir even on crash (for ephemeral CI/container environments)",
 )
 @click.pass_context
-def extract(ctx: click.Context, **kwargs: Any) -> None:
+def extract(ctx: click.Context, /, **kwargs: Any) -> None:
     """Extract pseudohaploid genotypes at AADR sites from a BAM/CRAM.
 
     BAM       Aligned BAM/CRAM (hg19 or hg38, auto-detected from @SQ)
