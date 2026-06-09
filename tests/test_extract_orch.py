@@ -359,6 +359,53 @@ def test_coverage_warn_threshold_marks_warning(
     assert any("below --warn-coverage" in r.message for r in caplog.records)
 
 
+# --- Calling-mode warning (entry-point-independent) ---
+
+
+def test_random_diploid_warns_from_orchestrator(
+    no_lift_run_setup: dict[str, Path],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A diploid calling mode warns from run_extract itself — so programmatic callers
+    that bypass the CLI's click.echo (e.g. the LLD #19 full-chain test) still see the
+    data-type-mismatch caution and the pseudohaploid=0 sidecar note."""
+    import logging
+    paths = no_lift_run_setup
+    caplog.set_level(logging.WARNING, logger="pileup_aadr.extract_orch")
+
+    args = ExtractCliArgs(
+        bam=paths["bam"], aadr_snp=paths["aadr"],
+        output_prefix=paths["tmp"] / "out",
+        ref_fasta=paths["fasta"], bam_build="hg19", aadr_build="hg19",
+        min_coverage=10, warn_coverage=20,
+        calling_mode="randomDiploid",
+    )
+    run_extract(args)
+    assert any(
+        "pseudohaploid=0" in r.message and "DIPLOID" in r.message
+        for r in caplog.records
+    ), f"expected diploid warning; got: {[r.message for r in caplog.records]}"
+
+
+def test_random_haploid_default_does_not_warn_from_orchestrator(
+    no_lift_run_setup: dict[str, Path],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The default pseudo-haploid randomHaploid mode emits no diploid warning."""
+    import logging
+    paths = no_lift_run_setup
+    caplog.set_level(logging.WARNING, logger="pileup_aadr.extract_orch")
+
+    args = ExtractCliArgs(
+        bam=paths["bam"], aadr_snp=paths["aadr"],
+        output_prefix=paths["tmp"] / "out",
+        ref_fasta=paths["fasta"], bam_build="hg19", aadr_build="hg19",
+        min_coverage=10, warn_coverage=20,
+    )
+    run_extract(args)
+    assert not any("pseudohaploid=0" in r.message for r in caplog.records)
+
+
 # --- Full lift path: orchestrator routing only (Stage 1 mocked) ---
 
 

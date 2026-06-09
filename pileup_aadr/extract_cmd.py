@@ -148,10 +148,10 @@ from .types import CALLING_MODES, ExtractCliArgs, mode_is_pseudohaploid
     default="randomHaploid",
     help=(
         "pileupCaller genotype-calling mode (default: randomHaploid). "
-        "randomHaploid and majorityCall are pseudo-haploid (0%% het) and MATCH "
+        "randomHaploid and majorityCall are pseudo-haploid (0% het) and MATCH "
         "the pseudo-haploid AADR 1240K panel — the correct choice for projecting "
         "a modern WGS target onto ancient DNA. randomDiploid samples two reads "
-        "(~13%% het on modern WGS) and does NOT match the panel; it is a legacy "
+        "(~13% het on modern WGS) and does NOT match the panel; it is a legacy "
         "escape hatch, and the .pseudohaploid.json sidecar records pseudohaploid=0 "
         "when it is selected."
     ),

@@ -4,11 +4,11 @@
     "GFX0442453": {
       "pseudohaploid": 1,
       "het_count": 0,
-      "non_missing_autosomal_count": 16170,
+      "non_missing_autosomal_count": 16171,
       "het_rate": 0.0,
       "source": "pileup-aadr-extract",
       "calling_mode": "randomHaploid",
-      "note": "--randomHaploid output is pseudohaploid by construction (one random read per site → 0% het)"
+      "note": "--randomHaploid output is pseudohaploid by construction (one random read per site \u2192 0% het)"
     }
   }
 }
