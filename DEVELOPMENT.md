@@ -8,9 +8,10 @@ day-to-day dev loop (test invocation, lint, release), see
 [CONTRIBUTING.md](CONTRIBUTING.md). This file is about *understanding the
 code well enough to extend it*.
 
-> **Note on current state.** The repo is at **v0.2.0** (published to PyPI).
-> The README's `Status` block still reads "v0.1 surface complete" — that's
-> stale; treat this file as the current source of truth on architecture.
+> **Note on current state.** The repo is at **v0.5.0** (published to PyPI).
+> This file is the source of truth on architecture. Exact line-number
+> references below may drift between releases — trust the described
+> contracts over the line numbers.
 
 ---
 
@@ -96,13 +97,13 @@ the JSON report.
 
 ## 3. Codebase tour
 
-The package is **5,498 LOC across 27 modules** under `pileup_aadr/`.
+The package is **~6,790 LOC across 28 modules** under `pileup_aadr/`.
 Names to know on day one:
 
 | Module | Job |
 |---|---|
 | `cli.py` | Click root group; outermost `try/except PileupAadrError` formatter; maps to exit codes; calls `configure_logging` once |
-| `extract_cmd.py` | Click decorator + **30** options for `extract`; constructs `ExtractCliArgs`, delegates to orchestrator |
+| `extract_cmd.py` | Click decorator + **31** options for `extract`; constructs `ExtractCliArgs`, delegates to orchestrator |
 | `extract_orch.py` | **Orchestrator.** Pre-flight → tool versions → lock+tempdir → stages → gates → writers |
 | `validate_cmd.py` / `validate_impl.py` | `validate` subcommand (16 results across pre-flight checks) |
 | `coverage_cmd.py` / `coverage_impl.py` | `coverage` subcommand (mosdepth wrapper) |
@@ -146,7 +147,7 @@ sequenceDiagram
     U->>CLI: pileup-aadr extract BAM AADR -o PREFIX
     CLI->>CLI: main() — configure_logging;<br/>outer try/except PileupAadrError
     CLI->>CMD: dispatch to extract() Click cmd
-    CMD->>CMD: collect 30 options; invert<br/>--enable-baq → no_baq;<br/>build frozen ExtractCliArgs
+    CMD->>CMD: collect 31 options; invert<br/>--enable-baq → no_baq;<br/>build frozen ExtractCliArgs
     CMD->>ORCH: run_extract(args)
     ORCH->>ORCH: pre-flight: format, build, sample-name,<br/>AADR parse, chain, FASTA, .dict
     ORCH->>ORCH: probe binary versions<br/>(ToolWrapper.version per SPEC)
@@ -213,7 +214,7 @@ renders them. Renaming classes (e.g. adding an `Error` suffix to
 `BAMSampleNameAmbiguous`) breaks the spec contract — the
 `pyproject.toml` `N818` ignore exists for this reason.
 
-### 5.3 JSON report schema (v1, additive-only)
+### 5.3 JSON report schema (v2, additive-only)
 
 Top-level keys, built by `output.write_run_report_json`:
 
@@ -309,8 +310,8 @@ during pre-flight and threads the resolved `Path` into stage modules.
 **Target FASTA (`ref_resolve.resolve_ref_fasta`):**
 1. `--ref-fasta PATH` (explicit CLI).
 2. `$PILEUP_AADR_REF_DIR/<build>.fa` (e.g., `hg38.fa`).
-3. BAM `@PG` autodetect — pysam reads `bam.header.get('PG', [])` for
-   path hints embedded by upstream aligners.
+3. BAM `@PG` autodetect — pysam reads `bam.header.to_dict().get('PG', [])`
+   for path hints embedded by upstream aligners.
 4. Otherwise → `ReferenceFastaNotFound` (exit 2).
 
 `ref_resolve.verify_fasta_matches_bam_build` runs after resolution:
@@ -481,7 +482,7 @@ in module code; only the orchestrator may write stdout (via
   `no_baq=True` (kwarg) → omits `-B` from `samtools mpileup` (which is
   the *disable* BAQ flag). The CLI default is BAQ-disabled (matches
   pileupCaller's recommended cmdline). The mapping is at
-  `extract_cmd.py:209-220`; the full-chain f2 invariant test caught a
+  `extract_cmd.py:233-242`; the full-chain f2 invariant test caught a
   sign-error here in v0.2.
 - **`--quiet` and `--verbose` are root-group options.**
   `pileup-aadr extract --quiet …` rejects with "no such option"; use
@@ -503,9 +504,14 @@ in module code; only the orchestrator may write stdout (via
 - **Benchmarks use `bench_*.py`, not `test_*.py`.** They live under
   `benchmarks/` (excluded from `testpaths`); `python_files` config
   matches both prefixes so explicit `pytest benchmarks/` collects them.
-- **mypy `strict = true` + `warn_unused_ignores = true`.** Many
-  `# type: ignore[arg-type]` are needed because `Literal["hg19","hg38"]`
-  narrowing isn't preserved across function boundaries.
+- **mypy `strict = true` is enforced in CI** (the lint job fails on any
+  error — it is no longer informational). The tree is effectively
+  `# type: ignore`-free: pandas `itertuples()` scalar unions are handled
+  with `cast`, Click command callbacks make `ctx` positional-only, and
+  pysam header reads go through `.to_dict()`. `pandas-stubs` is **pinned**
+  in the dev extras (its `itertuples`/column typing shifts between
+  releases, so an unpinned floor makes `mypy` non-reproducible between
+  local and CI); `types-psutil` is declared for the same reason.
 
 ### Streaming & data shape
 
@@ -536,7 +542,7 @@ in module code; only the orchestrator may write stdout (via
 ## 9. Common tasks (where to start)
 
 ### Add a new CLI flag to `extract`
-1. Add the `@click.option(...)` decorator in `extract_cmd.py:23-193`
+1. Add the `@click.option(...)` decorator in `extract_cmd.py:23-213`
    (the option block).
 2. Add the matching field to `types.ExtractCliArgs` (frozen dataclass).
 3. If the flag affects a stage, thread it through `extract_orch.run_extract`
@@ -611,7 +617,7 @@ in module code; only the orchestrator may write stdout (via
 - **Integration tests** live in `tests/integration/`. They invoke real
   binaries and skip cleanly when toolchain absent. CI's `bio-tools`
   job sets up the toolchain via bioconda; locally see CONTRIBUTING.md.
-- **Total: 255 tests collected** by plain `pytest`. The unit subset
+- **Total: 313 tests collected** by plain `pytest`. The unit subset
   runs in ~5s; integration tests auto-skip without their toolchain, so
   the total runtime with no binaries on PATH is also ~5s.
 - **The full-chain f2 invariant** (`tests/integration/test_lld19_full_chain.py`)
@@ -663,7 +669,7 @@ the AADR is hg19. CRAM format support is at the pysam layer
 Default behaviour is BAQ disabled (matches pileupCaller's recommended
 cmdline; mpileup's `-B` is the disable-BAQ flag). The CLI exposes the
 *positive* sense (`--enable-baq` opts in). The double inversion
-bridges the two conventions; see `extract_cmd.py:209-220`.
+bridges the two conventions; see `extract_cmd.py:233-242`.
 
 **Why is `samtools -@` not used anymore?**
 mpileup is single-threaded — the `-@` flag doesn't exist in any
@@ -711,7 +717,7 @@ The full chain is what the full-chain f2 invariant test
 
 1. Skim §1–4 of this file (architecture + codebase tour + walkthrough).
 2. Read [CONTRIBUTING.md](CONTRIBUTING.md) (dev install + how to run tests).
-3. Run `pytest` — should collect 255 tests; integration tests auto-skip
+3. Run `pytest` — should collect 313 tests; integration tests auto-skip
    without their toolchain, so it finishes in ~5s either way. If it
    doesn't, fix your env before doing anything else.
 4. Browse [open issues](https://github.com/carstenerickson/pileup-aadr/issues)

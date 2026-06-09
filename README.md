@@ -4,7 +4,7 @@
 
 A focused tool that takes a user's WGS BAM (hg19 or hg38) plus an AADR `.snp` file and emits coverage-matched pseudohaploid genotypes in EIGENSTRAT format, ready for sample-binding via [pgen-samplebind](https://github.com/carstenerickson/pgen-samplebind). Replaces the 5-step Picard-liftover + sites-VCF-roundtrip + pileupCaller + rsID-rejoin dance that every ancient-DNA personal-WGS pipeline currently reimplements.
 
-**Status: alpha (v0.1 surface complete).** All four subcommands functional; 208 unit + integration tests passing on a 6-cell CI matrix (Python 3.11/3.12/3.13 × Linux/macOS).
+**Status: v0.5.0 — published to [PyPI](https://pypi.org/project/pileup-aadr/).** All four subcommands functional; 308 unit + integration tests passing (5 env-skipped) on a 6-cell CI matrix (Python 3.11/3.12/3.13 × Linux/macOS), ruff- and mypy-clean.
 
 ## Why it exists
 
@@ -36,7 +36,7 @@ External binaries needed by `extract`:
 | `java`        | ≥ 11        | transitive Picard requirement                    |
 | `mosdepth`    | ≥ 0.3.6     | only `coverage` subcommand                       |
 
-Easiest install: `conda install -c bioconda samtools pileupcaller picard mosdepth`. The UCSC `hg19ToHg38.over.chain.gz` (~223 KB) is bundled with the package and SHA-verified at startup — no separate download needed.
+Easiest install: `conda install -c bioconda samtools sequencetools picard mosdepth` (the `pileupCaller` binary ships in the `sequencetools` package). The UCSC `hg19ToHg38.over.chain.gz` (~223 KB) is bundled with the package and SHA-verified at startup — no separate download needed.
 
 ## Quickstart
 
@@ -183,9 +183,9 @@ Key invariants the implementation honors:
 
 ## Integration with ancestry-pipeline-tool
 
-`pileup-aadr extract --report-json <path>` produces a schema-versioned JSON consumed by ancestry-pipeline-tool's gate node. The schema (v1) places per-stage `ExtractCounters` fields at the top level alongside `tool`, `input`, `output`, `gates`, and `config` blocks; the no-lift fast path serializes Stages 1/2/4 as `null` so consumers can branch cleanly.
+`pileup-aadr extract --report-json <path>` produces a schema-versioned JSON consumed by ancestry-pipeline-tool's gate node. The schema (v2) places per-stage `ExtractCounters` fields at the top level alongside `tool`, `input`, `output`, `gates`, and `config` blocks; the no-lift fast path serializes Stages 1/2/4 as `null` so consumers can branch cleanly.
 
-The `<prefix>.pseudohaploid.json` sidecar is read by `pgen-samplebind` via [pgen-samplebind#2](https://github.com/carstenerickson/pgen-samplebind/issues/2) — `pseudohaploid=1` + `het_count` + `het_rate` flow through to the sample-bind step without re-derivation.
+The `<prefix>.pseudohaploid.json` sidecar (schema v1) is read by `pgen-samplebind` via [pgen-samplebind#2](https://github.com/carstenerickson/pgen-samplebind/issues/2) — `pseudohaploid` (1 for the pseudo-haploid modes, 0 for `--randomDiploid`) + `het_count` + `het_rate` flow through to the sample-bind step without re-derivation.
 
 ## Status
 
@@ -193,11 +193,11 @@ The `<prefix>.pseudohaploid.json` sidecar is read by `pgen-samplebind` via [pgen
 |-------------------|-------------------------------------------------------------|
 | Design            | Frozen (HLD + LLD reconciled; all readiness items closed)   |
 | `extract`         | Functional end-to-end (lift + no-lift fast path)            |
-| `validate`        | Functional (10-check pre-flight)                            |
+| `validate`        | Functional (16-check pre-flight)                            |
 | `coverage`        | Functional (mosdepth wrapper)                               |
 | `inspect`         | Functional (pure-Python AADR `.snp` summary)                |
-| Tests             | 208 passing across 6-cell matrix; ruff-clean                |
-| First tag         | Pending real-binary smoke test against captured baselines   |
+| Tests             | 308 passing (5 env-skipped) across 6-cell matrix; ruff + mypy clean |
+| Releases          | v0.5.0 on PyPI; tag pushes publish via CI (gated on green CI) |
 
 CHANGELOG tracks the day-by-day implementation progress with design-constraint references.
 
