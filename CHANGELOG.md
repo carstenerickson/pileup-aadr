@@ -6,6 +6,48 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-06-09
+
+### Added
+
+- **`--calling-mode` CLI option** (`randomHaploid` default / `randomDiploid` /
+  `majorityCall`). Stage 3's genotype-calling mode is now user-selectable instead
+  of hardcoded. `randomHaploid` (the default) and `majorityCall` are pseudo-haploid
+  (0% het) and match the pseudo-haploid AADR 1240K panel — the correct choice when
+  projecting a modern WGS target onto ancient DNA. `randomDiploid` is retained as a
+  legacy escape hatch for callers who specifically want diploid genotypes.
+
+### Changed
+
+- **The `.pseudohaploid.json` sidecar is now mode-honest.** `calling_mode` records
+  the actual `--calling-mode` used, and `pseudohaploid` is `1` for the pseudo-haploid
+  modes but `0` for `randomDiploid` (which produces diploid het-bearing calls) — so the
+  downstream f2 consumer (`pgen-samplebind`) never mistakes diploid data for
+  pseudo-haploid. Selecting `--calling-mode randomDiploid` also emits a stderr warning
+  (from both the CLI and the orchestrator, so programmatic callers see it too).
+- `--seed` is forwarded for every mode: the random modes use it for read sampling, and `majorityCall` uses it to break equal-allele-depth ties (so the run stays reproducible).
+- `validate` now probes the installed `pileupCaller` for all three mode flags.
+- Modes are defined once on the `CallingMode` type (`CALLING_MODES`,
+  `PSEUDOHAPLOID_MODES`, `mode_is_pseudohaploid`): the CLI choices and the
+  `validate` probe derive from it, and the pseudo-haploid check is an allowlist
+  (a future mode is treated as diploid until explicitly added — fails closed).
+
+### Fixed
+
+- **Stage 3 now calls `pileupCaller --randomHaploid`, not `--randomDiploid`.** This is
+  a correctness fix. pileup-aadr produces pseudo-haploid genotypes at AADR 1240K sites
+  to co-analyze a target with the AADR panel, which is itself pseudo-haploid (one random
+  read per site). `--randomDiploid` samples **two** reads → a **diploid** call (~13% het
+  on a modern WGS target), yet the `.pseudohaploid.json` sidecar labelled that output
+  `"pseudohaploid": 1` "by construction" — mislabeling het-bearing diploid data as
+  pseudo-haploid and creating a diploid-vs-pseudo-haploid data-type mismatch with the
+  panel in downstream f-statistics (reference-bias + artificial-drift heterogeneity;
+  Lazaridis et al. 2017, Souilmi et al. 2022). `--randomHaploid` (one random read → a
+  haploid call, 0% het) is the correct, panel-matching mode. The provenance sidecar
+  (`calling_mode`, `note`) and Stage-3 status line are updated accordingly. Verified on a
+  33× modern WGS target (track_e phase4): randomDiploid → 13% het vs randomHaploid → 0%
+  het, with qpAdm admixture weights invariant across calling modes.
+
 ## [0.4.0] — 2026-05-14
 
 Picard chromosome sharding for Stage 1 parallelism, AADR `.snp` parse cache,

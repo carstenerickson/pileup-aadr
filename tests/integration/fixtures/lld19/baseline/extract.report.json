@@ -1,36 +1,36 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "tool": {
     "name": "pileup-aadr",
-    "version": "0.1.2",
+    "version": "0.1.1",
     "tool_versions": {
       "samtools": "1.23.1",
       "pileupCaller": "1.6.0.0",
       "java": "21",
-      "picard": "3.1.1"
+      "picard": "3.4.0"
     }
   },
   "input": {
-    "bam_path": "/tmp/lld19/GFX0442453.chr22.bam",
+    "bam_path": "/Volumes/Bioinformation/tmp/lld19-regen/chr22.bam",
     "bam_format": "BAM",
     "bam_build": "hg38",
     "bam_sample_name_source": "cli",
-    "aadr_snp_path": "/tmp/lld19/aadr_chr22_5pops.snp",
+    "aadr_snp_path": "tests/integration/fixtures/lld19/aadr_ref/aadr_chr22_5pops.snp",
     "aadr_build": "hg19",
     "aadr_input_rows": 16420,
-    "chain_path": "/home/carstenerickson/pileup-aadr/pileup_aadr/data/hg19ToHg38.over.chain.gz",
+    "chain_path": "/Volumes/Bioinformation/github.com/pileup-aadr/pileup_aadr/data/hg19ToHg38.over.chain.gz",
     "chain_sha256": "5c0598e500ceb5a78c73086929e8ef993aec309bcafb595139b53d440b125a1d",
-    "target_fasta_path": "/home/carstenerickson/ancestry/data/Homo_sapiens_assembly38.fasta"
+    "target_fasta_path": "/Volumes/Bioinformation/wgs_results/reference/Homo_sapiens_assembly38.fasta"
   },
   "stage_1_lift": {
-    "wallclock_seconds": 18.537835839000763,
+    "wallclock_seconds": 28.0103964159498,
     "input_sites_after_filters": 16241,
     "lifted_sites": 16188,
     "liftover_yield_pct": 99.6737,
     "liftover_yield_warning": false,
     "rejected_by_reason": {
-      "SwappedAlleles": 0,
       "MismatchedRefAllele": 0,
+      "SwappedAlleles": 0,
       "NoTarget": 53,
       "IndelStraddlesMultipleIntervals": 0,
       "other": 0
@@ -39,61 +39,63 @@
     "input_filters": {
       "palindrome_drops": 179,
       "non_snp_drops": 0,
-      "non_autosome_drops": 0
+      "non_autosome_drops": 0,
+      "rows_written": 16241
     }
   },
   "stage_2_transform": {
-    "wallclock_seconds": 0.07805433599969547,
+    "wallclock_seconds": 0.0506783330347389,
     "alt_contig_drops": 0,
     "output_sites": 16188
   },
   "stage_3_call": {
-    "wallclock_seconds": 32.24320280400025,
+    "wallclock_seconds": 10.787595000001602,
     "pileupcaller_summary": {
       "total_sites": 16188,
-      "non_missing_calls": 16170,
-      "avg_raw_reads": 32.393254262416605,
-      "avg_damage_cleaned_reads": 32.393254262416605,
-      "avg_sampled_from": 32.389980232270815
-    }
+      "non_missing_calls": 16171,
+      "avg_raw_reads": 32.83920187793427,
+      "avg_damage_cleaned_reads": 32.83920187793427,
+      "avg_sampled_from": 32.83506300963677
+    },
+    "per_shard": []
   },
   "stage_4_rejoin": {
-    "wallclock_seconds": 0.7593090369991842,
+    "wallclock_seconds": 0.02335491601843387,
     "rsid_matched": 16188,
     "ref_alt_swap_count": 15962,
     "allele_mismatch_drops": 0,
     "output_variants": 16188
   },
   "coverage": {
-    "non_missing_autosomal_calls": 16169,
-    "coverage_fraction": 0.9988,
+    "non_missing_autosomal_calls": 16171,
+    "coverage_fraction": 0.9848,
     "coverage_warning": false,
     "per_chrom_call_count": {
-      "chr22": 16169
+      "chr22": 16171
     }
   },
   "gates": {
     "liftover_yield": "PASS",
     "coverage": "PASS"
   },
-  "wallclock_total_seconds": 53.9,
+  "wallclock_total_seconds": 40.0,
   "output": {
-    "prefix": "/tmp/lld19/extract_out",
+    "prefix": "/Volumes/Bioinformation/tmp/lld19-regen/extract_out",
     "geno_bytes": 32376,
     "snp_bytes": 568602,
     "ind_bytes": 29,
-    "pseudohaploid_sidecar": "/tmp/lld19/extract_out.pseudohaploid.json"
+    "pseudohaploid_sidecar": "/Volumes/Bioinformation/tmp/lld19-regen/extract_out.pseudohaploid.json"
   },
   "config": {
-    "bam": "/tmp/lld19/GFX0442453.chr22.bam",
-    "aadr_snp": "/tmp/lld19/aadr_chr22_5pops.snp",
-    "output_prefix": "/tmp/lld19/extract_out",
+    "bam": "/Volumes/Bioinformation/tmp/lld19-regen/chr22.bam",
+    "aadr_snp": "tests/integration/fixtures/lld19/aadr_ref/aadr_chr22_5pops.snp",
+    "output_prefix": "/Volumes/Bioinformation/tmp/lld19-regen/extract_out",
     "sample_name": "GFX0442453",
     "pop_name": "GFX0442453_test",
     "sex": "U",
     "overwrite": false,
     "chain_path": null,
-    "ref_fasta": "/home/carstenerickson/ancestry/data/Homo_sapiens_assembly38.fasta",
+    "ref_fasta": "/Volumes/Bioinformation/wgs_results/reference/Homo_sapiens_assembly38.fasta",
     "bam_build": "hg38",
     "aadr_build": "hg19",
     "picard_mem": "8g",
@@ -106,16 +108,19 @@
     "picard_shards": null,
     "min_mapq": 30,
     "min_baseq": 30,
-    "no_baq": true,
+    "no_baq": false,
     "seed": 42,
+    "calling_mode": "randomHaploid",
     "liftover_yield_fail_pct": 50.0,
     "liftover_yield_warn_pct": 95.0,
     "min_coverage": 100,
     "warn_coverage": 1000,
-    "report_json": "/tmp/lld19/extract.report.json",
+    "report_json": "/Volumes/Bioinformation/tmp/lld19-regen/extract.report.json",
     "report_tsv": null,
     "tempdir": null,
     "keep_tempdir": false,
-    "clean_tempdir_on_crash": false
+    "clean_tempdir_on_crash": false,
+    "fan_out_strategy": "per_chromosome",
+    "shard_seed_derivation": "master_seed * 1009 + shard_index"
   }
 }

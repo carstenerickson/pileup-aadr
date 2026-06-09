@@ -25,9 +25,44 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
+  # Gate: refuse to build/publish a release unless the CI workflow (test matrix +
+  # ruff + bio-tools) concluded `success` on the exact commit the tag points at.
+  # Without this, a `v*` tag on a red commit would still publish to PyPI, since the
+  # build/smoke-test jobs below don't re-run lint or the bio-tools integration.
+  require-ci-green:
+    name: Require CI green on the tagged commit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read  # gh api needs actions:read to read workflow runs
+    steps:
+      - name: Assert ci.yml succeeded for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != "push" ]; then
+            echo "event=${{ github.event_name }} (manual dry-run) — skipping CI-green gate."
+            exit 0
+          fi
+          SHA="${{ github.sha }}"
+          echo "Tagged commit: $SHA"
+          # ci.yml runs on pushes to main, so the tagged commit (which must have
+          # landed on main) has a run keyed by this exact head_sha.
+          CONCLUSION=$(gh api \
+            "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?head_sha=$SHA&per_page=1" \
+            --jq '.workflow_runs[0].conclusion // "NO_RUN"')
+          echo "CI conclusion for $SHA: $CONCLUSION"
+          if [ "$CONCLUSION" != "success" ]; then
+            echo "::error::Refusing to release $SHA: ci.yml is '$CONCLUSION' (must be 'success'). Tag only commits whose CI passed green on main."
+            exit 1
+          fi
+          echo "CI is green — proceeding with the release."
+
   build:
     name: Build sdist + wheel
     runs-on: ubuntu-latest
+    needs: require-ci-green
     steps:
       - uses: actions/checkout@v5
         with:

@@ -69,11 +69,11 @@ def test_sidecar_carries_all_fields_pgen_samplebind_expects(tmp_path: Path) -> N
         f"missing keys: {expected_keys - s.keys()}"
     )
 
-    # Single-BAM --randomDiploid is pseudohaploid by construction; pgen-samplebind
+    # --randomHaploid is pseudohaploid by construction (0% het); pgen-samplebind
     # re-derives via classify(het_count==0 → PSEUDOHAPLOID), so:
     assert s["pseudohaploid"] == 1
     assert s["het_count"] == 0  # synthetic .geno has no '1' chars
-    assert s["calling_mode"] == "randomDiploid"
+    assert s["calling_mode"] == "randomHaploid"
     assert s["source"] == "pileup-aadr-extract"
 
 

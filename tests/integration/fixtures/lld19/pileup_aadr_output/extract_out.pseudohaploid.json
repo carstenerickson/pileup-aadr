@@ -3,12 +3,12 @@
   "samples": {
     "GFX0442453": {
       "pseudohaploid": 1,
-      "het_count": 2286,
-      "non_missing_autosomal_count": 16170,
-      "het_rate": 0.14137291280148423,
+      "het_count": 0,
+      "non_missing_autosomal_count": 16171,
+      "het_rate": 0.0,
       "source": "pileup-aadr-extract",
-      "calling_mode": "randomDiploid",
-      "note": "single-BAM --randomDiploid output is pseudohaploid by construction"
+      "calling_mode": "randomHaploid",
+      "note": "--randomHaploid output is pseudohaploid by construction (one random read per site \u2192 0% het)"
     }
   }
 }

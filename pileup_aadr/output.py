@@ -197,7 +197,7 @@ def write_stdout_summary(
     n_shards = len(s3.per_shard)
     shard_note = f" ({n_shards} shards)" if n_shards > 1 else ""
     out.write(
-        f"Stage 3 - samtools mpileup + pileupCaller --randomDiploid [{s3_time}{shard_note}]\n"
+        f"Stage 3 - samtools mpileup + pileupCaller [{s3_time}{shard_note}]\n"
     )
     out.write("  pileupCaller stderr summary stats (parsed for JSON report):\n")
     out.write(f"    TotalSites:        {pc.total_sites:,}\n")

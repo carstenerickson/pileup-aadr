@@ -395,8 +395,40 @@ def test_sidecar_pseudohaploid_classification(tmp_path: Path) -> None:
     assert sample["het_count"] == 1
     assert sample["non_missing_autosomal_count"] == 2
     assert sample["het_rate"] == 0.5
-    assert sample["calling_mode"] == "randomDiploid"
+    assert sample["calling_mode"] == "randomHaploid"
     assert "no-lift" not in sample["note"]
+
+
+def _sidecar_for_mode(tmp_path: Path, calling_mode: str) -> dict:
+    """Run rejoin_aadr_frame for a given calling_mode and return the sidecar sample dict."""
+    aadr = _aadr_df([("rs1", "1", 0.0, 1000, "A", "G")])
+    pc_prefix = tmp_path / "call"
+    _write_pc_triplet(pc_prefix, [("rs1", "1", 0.0, 5000, "A", "G", GENO_HET)])
+    lifted_vcf = tmp_path / "lifted.vcf"
+    _write_lifted_vcf(lifted_vcf, [("chr1", 5000, "rs1", "A", "G", False)])
+    out_prefix = tmp_path / "out"
+    result = rejoin_aadr_frame(
+        pc_prefix, _make_lookup(aadr, lifted_vcf), out_prefix, "Carsten", "P",
+        calling_mode=calling_mode,
+    )
+    return result.pseudohaploid_sidecar["samples"]["Carsten"]
+
+
+def test_sidecar_random_diploid_marks_not_pseudohaploid(tmp_path: Path) -> None:
+    """randomDiploid is DIPLOID: sidecar records pseudohaploid=0 so the f2 consumer
+    does not mislabel het-bearing diploid data as pseudo-haploid (the original bug)."""
+    sample = _sidecar_for_mode(tmp_path, "randomDiploid")
+    assert sample["pseudohaploid"] == 0
+    assert sample["calling_mode"] == "randomDiploid"
+    assert "DIPLOID" in sample["note"]
+
+
+def test_sidecar_majority_call_is_pseudohaploid(tmp_path: Path) -> None:
+    """majorityCall yields a consensus single allele (0% het) → pseudohaploid=1."""
+    sample = _sidecar_for_mode(tmp_path, "majorityCall")
+    assert sample["pseudohaploid"] == 1
+    assert sample["calling_mode"] == "majorityCall"
+    assert "consensus" in sample["note"]
 
 
 # --- build_merged_lookup ---
@@ -518,6 +550,20 @@ def test_no_lift_fast_path_sidecar_notes_no_lift(tmp_path: Path) -> None:
     out_prefix = tmp_path / "out"
     result = no_lift_fast_path_finalize(pc_prefix, out_prefix, "S", "P")
     assert "no-lift" in result.pseudohaploid_sidecar["samples"]["S"]["note"]
+
+
+def test_no_lift_fast_path_random_diploid_marks_not_pseudohaploid(tmp_path: Path) -> None:
+    """No-lift path threads calling_mode too: randomDiploid → pseudohaploid=0, note keeps no-lift."""
+    pc_prefix = tmp_path / "call"
+    _write_pc_triplet(pc_prefix, [("rs1", "1", 0.0, 1000, "A", "G", GENO_HET)])
+
+    out_prefix = tmp_path / "out"
+    result = no_lift_fast_path_finalize(pc_prefix, out_prefix, "S", "P", calling_mode="randomDiploid")
+    sample = result.pseudohaploid_sidecar["samples"]["S"]
+    assert sample["pseudohaploid"] == 0
+    assert sample["calling_mode"] == "randomDiploid"
+    assert "no-lift" in sample["note"]
+    assert "DIPLOID" in sample["note"]
 
 
 def test_no_lift_overrides_pc_ind_with_user_sex(tmp_path: Path) -> None:

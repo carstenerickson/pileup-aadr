@@ -12,7 +12,7 @@ end-to-end correctness invariant from LLD §"pgen-samplebind composition":
 | Path | Bytes | Source |
 |---|---|---|
 | `aadr_ref/aadr_chr22_5pops.{geno,snp,ind}` | 1.2 MB | AADR v66 1240k subset to chr22 + 5 ancient populations (Loschbour, Stuttgart, MA1, Denisova, Altai_Neanderthal). Built via `admixtools::packedancestrymap_to_plink` → `plink2 --chr 22` → `convertf` PACKEDPED → EIGENSTRAT. |
-| `pileup_aadr_output/extract_out.{geno,snp,ind,pseudohaploid.json}` | 587 KB | Output of `pileup-aadr extract v0.1.2` against a chr22 subset of an hg38 WGS BAM (DRAGEN-aligned, 33× coverage). 16,188 variants × 1 sample. Pre-extracted so the layer-A test doesn't need a BAM. |
+| `pileup_aadr_output/extract_out.{geno,snp,ind,pseudohaploid.json}` | 587 KB | Output of `pileup-aadr extract` (default `--calling-mode randomHaploid`, v0.5.0) against a chr22 subset of an hg38 WGS BAM (DRAGEN-aligned, 33× coverage). 16,188 variants × 1 sample (16,171 non-missing, 0 het — pseudo-haploid by construction). Pre-extracted so the layer-A test doesn't need a BAM. |
 | `baseline/f2_baseline.rds` | 2.0 KB | The frozen f2 set: 6×6×13 array (5 ref pops + the new sample × 13 jackknife blocks), produced by AT2 `extract_f2` on the merged panel. The test asserts re-running the chain produces a matching f2 within `max_dev < 1e-9`. |
 | `baseline/extract.report.json` | 3.4 KB | Provenance: pileup-aadr's `--report-json` from the run that produced `extract_out.*`. Records counters, gates, tool versions, exit timing. |
 

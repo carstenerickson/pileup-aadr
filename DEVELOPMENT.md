@@ -24,7 +24,7 @@ AdmixTools 2 (`qpAdm`, `qpgraph`).
 
 It replaces the 5-step manual pipeline that every ancient-DNA personal-WGS
 study currently reimplements: lift AADR sites → sites VCF → pileupCaller
-`.snp` → mpileup + `pileupCaller --randomDiploid` → rejoin to AADR's hg19
+`.snp` → mpileup + `pileupCaller --randomHaploid` → rejoin to AADR's hg19
 frame by rsID. Each step has historically-tribal failure modes; wrapping
 all five in one tool with proper instrumentation removes the most
 failure-prone manual link in any aDNA pipeline.
@@ -68,7 +68,7 @@ AADR .snp (hg19)              user BAM (hg19 or hg38)
        │
        │ Stage 3: pileup_call.py
        │   samtools mpileup -B -q 30 -Q 30 -R -f <fa> -l <bed>  |
-       │     pileupCaller --randomDiploid
+       │     pileupCaller --randomHaploid   (default; --calling-mode selects)
        │   (always runs; ~25–40 min on a 33× WGS at 1240k)
        ▼
    pileupCaller EIGENSTRAT triplet (target build)
@@ -251,8 +251,10 @@ unknowns.
 
 Separate file from the run report. Read by `pgen-samplebind` at merge
 time to skip per-sample heterozygosity recomputation. Required fields:
-`pseudohaploid: 1`, `het_count`, `non_missing_autosomal_count`,
-`het_rate`, `source: pileup-aadr-extract`, `calling_mode: randomDiploid`.
+`pseudohaploid` (1 for the pseudo-haploid modes `randomHaploid`/`majorityCall`,
+0 for the diploid `randomDiploid` escape hatch), `het_count`,
+`non_missing_autosomal_count`, `het_rate`, `source: pileup-aadr-extract`,
+`calling_mode` (the `--calling-mode` value, default `randomHaploid`).
 
 ### 5.5 External-binary version contract
 
@@ -424,9 +426,13 @@ in module code; only the orchestrator may write stdout (via
 1. **`RECOVER_SWAPPED_REF_ALT=true`** drives Stage 1 lift; the
    `SwappedAlleles` INFO flag is the input to Stage 4's dosage flip.
    Without it, ~3% of sites silently get the wrong dosage.
-2. **Single-BAM `--randomDiploid` is pseudohaploid by construction.**
-   The sidecar JSON records this; there's no 4th `.ind` column for it
-   because convertf/mergeit silently drop unknown columns.
+2. **The default `--randomHaploid` (and `--majorityCall`) output is
+   pseudohaploid by construction** (0% het, matches the pseudo-haploid
+   AADR panel). The sidecar JSON records `calling_mode` + `pseudohaploid`;
+   there's no 4th `.ind` column for it because convertf/mergeit silently
+   drop unknown columns. The `--randomDiploid` escape hatch produces
+   diploid (het-bearing) calls and is recorded as `pseudohaploid=0` so the
+   downstream f2 consumer never treats diploid data as pseudo-haploid.
 3. **Duplicate-rsID rejection at startup** — `format_detect.parse_aadr_snp`
    raises `AADRDuplicateRsidError` (exit 3) on dupes.
 4. **`--sample-name` ALWAYS overrides BAM `@RG SM:`** — even when they

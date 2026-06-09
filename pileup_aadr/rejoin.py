@@ -26,6 +26,7 @@ import pysam
 from .counters import CoverageCounters, Stage4RejoinCounters
 from .errors import PileupAadrInternalError
 from .format_detect import normalize_chrom
+from .types import CallingMode, mode_is_pseudohaploid
 
 log = logging.getLogger(__name__)
 
@@ -122,6 +123,7 @@ def rejoin_aadr_frame(
     pop_name: str,
     *,
     sex: str = "U",
+    calling_mode: CallingMode = "randomHaploid",
     emit_per_variant_rows: bool = False,
     aadr_autosomal_count: int | None = None,
 ) -> RejoinOutput:
@@ -274,6 +276,7 @@ def rejoin_aadr_frame(
         het_count=het_count,
         non_missing_autosomal=non_missing_autosomal,
         no_lift=False,
+        calling_mode=calling_mode,
     )
 
     wallclock = time.perf_counter() - t0
@@ -308,6 +311,7 @@ def no_lift_fast_path_finalize(
     pop_name: str,
     *,
     sex: str = "U",
+    calling_mode: CallingMode = "randomHaploid",
     emit_per_variant_rows: bool = False,
     aadr_autosomal_count: int | None = None,
 ) -> RejoinOutput:
@@ -385,6 +389,7 @@ def no_lift_fast_path_finalize(
         het_count=het_count,
         non_missing_autosomal=non_missing_autosomal,
         no_lift=True,
+        calling_mode=calling_mode,
     )
 
     _autosomal_denom = aadr_autosomal_count if aadr_autosomal_count is not None else sum(
@@ -426,26 +431,45 @@ def _build_sidecar(
     het_count: int,
     non_missing_autosomal: int,
     no_lift: bool,
+    calling_mode: CallingMode = "randomHaploid",
 ) -> dict[str, Any]:
-    """Build the PSEUDOHAPLOID sidecar dict (consumed by pgen-samplebind)."""
-    note = (
-        "no-lift fast path (AADR build == BAM build); single-BAM --randomDiploid "
-        "output is pseudohaploid by construction"
-        if no_lift
-        else "single-BAM --randomDiploid output is pseudohaploid by construction"
+    """Build the PSEUDOHAPLOID sidecar dict (consumed by pgen-samplebind).
+
+    The `pseudohaploid` flag and `note` are mode-dependent. randomHaploid and
+    majorityCall yield pseudo-haploid output (0% het) that matches the AADR
+    panel → pseudohaploid=1. randomDiploid yields DIPLOID het-bearing calls that
+    do NOT match the panel → pseudohaploid=0, so the downstream f2 consumer
+    (pgen-samplebind) does not treat diploid data as pseudo-haploid.
+    """
+    is_pseudohaploid = mode_is_pseudohaploid(calling_mode)
+    lift_prefix = (
+        "no-lift fast path (AADR build == BAM build); " if no_lift else ""
     )
+    if is_pseudohaploid:
+        mechanism = (
+            "one random read per site → 0% het"
+            if calling_mode == "randomHaploid"
+            else "majority consensus allele per site → 0% het"
+        )
+        note = f"{lift_prefix}--{calling_mode} output is pseudohaploid by construction ({mechanism})"
+    else:
+        note = (
+            f"{lift_prefix}--randomDiploid output is DIPLOID (two reads sampled per "
+            "site → het-bearing); NOT pseudohaploid and does not match the AADR "
+            "panel — legacy escape hatch, downstream f-statistics expect pseudohaploid"
+        )
     return {
         "schema_version": 1,
         "samples": {
             sample_name: {
-                "pseudohaploid": 1,
+                "pseudohaploid": 1 if is_pseudohaploid else 0,
                 "het_count": het_count,
                 "non_missing_autosomal_count": non_missing_autosomal,
                 "het_rate": (
                     het_count / non_missing_autosomal if non_missing_autosomal else 0.0
                 ),
                 "source": "pileup-aadr-extract",
-                "calling_mode": "randomDiploid",
+                "calling_mode": calling_mode,
                 "note": note,
             },
         },

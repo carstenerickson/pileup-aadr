@@ -52,5 +52,8 @@ env/
 # Large test data not committed (cached by tests/fixtures/_fetch_*.py)
 ~/.cache/pileup-aadr-test-data/
 
+# chr22 integration FASTA fetched/built at test time (cached in CI via actions/cache)
+tests/integration/fixtures/chr22.fa*
+
 # Bench data not committed
 benchmarks/data/

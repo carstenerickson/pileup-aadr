@@ -42,7 +42,7 @@ from .tool_wrapper import (
     SAMTOOLS_SPEC,
     ToolWrapper,
 )
-from .types import ExtractCliArgs
+from .types import ExtractCliArgs, mode_is_pseudohaploid
 
 log = logging.getLogger(__name__)
 
@@ -60,6 +60,19 @@ def run_extract(args: ExtractCliArgs) -> int:
             as crashes by `cli.py`).
     """
     t_start = time.perf_counter()
+
+    # Entry-point-independent counterpart to the CLI's diploid warning: programmatic
+    # callers of run_extract (e.g. the LLD #19 full-chain test) bypass extract_cmd's
+    # click.echo, so the same caution is emitted via the logger here. Allowlist
+    # semantics: any non-pseudo-haploid mode warns and is recorded pseudohaploid=0.
+    if not mode_is_pseudohaploid(args.calling_mode):
+        log.warning(
+            "--calling-mode %s produces DIPLOID (het-bearing) genotypes that do NOT "
+            "match the pseudo-haploid AADR 1240K panel (a data-type mismatch for "
+            "ancient-DNA f-statistics); the .pseudohaploid.json sidecar will record "
+            "pseudohaploid=0. Use randomHaploid (default) unless you need diploid calls.",
+            args.calling_mode,
+        )
 
     warn_if_networked_fs(args.output_prefix)
 
@@ -216,6 +229,7 @@ def _run_stages(
             sample_name=sample_name, pop_name=pop_name,
             shard_dir=shard_dir,
             master_seed=args.seed, threads=args.threads,
+            calling_mode=args.calling_mode,
             min_mapq=args.min_mapq, min_baseq=args.min_baseq,
             no_baq=args.no_baq,
         )
@@ -223,6 +237,7 @@ def _run_stages(
             pileupcaller_eig_prefix=td_call / "user_native",
             output_prefix=args.output_prefix,
             sample_name=sample_name, pop_name=pop_name, sex=args.sex,
+            calling_mode=args.calling_mode,
             emit_per_variant_rows=(args.report_tsv is not None),
             aadr_autosomal_count=aadr_autosomal_count,
         )
@@ -275,6 +290,7 @@ def _run_stages(
             sample_name=sample_name, pop_name=pop_name,
             shard_dir=shard_dir,
             master_seed=args.seed, threads=args.threads,
+            calling_mode=args.calling_mode,
             min_mapq=args.min_mapq, min_baseq=args.min_baseq,
             no_baq=args.no_baq,
         )
@@ -289,6 +305,7 @@ def _run_stages(
         aadr_lookup=aadr_lookup,
         output_prefix=args.output_prefix,
         sample_name=sample_name, pop_name=pop_name, sex=args.sex,
+        calling_mode=args.calling_mode,
         emit_per_variant_rows=(args.report_tsv is not None),
         aadr_autosomal_count=aadr_autosomal_count,
     )

@@ -114,8 +114,9 @@ def test_sidecar_writes_dict_as_json(tmp_path: Path) -> None:
                 "non_missing_autosomal_count": 1_000_000,
                 "het_rate": 0.0001,
                 "source": "pileup-aadr-extract",
-                "calling_mode": "randomDiploid",
-                "note": "single-BAM --randomDiploid output is pseudohaploid by construction",
+                "calling_mode": "randomHaploid",
+                "note": "--randomHaploid output is pseudohaploid by construction "
+                "(one random read per site → 0% het)",
             },
         },
     }
