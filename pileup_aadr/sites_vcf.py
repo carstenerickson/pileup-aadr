@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Final, Literal
+from typing import Final, Literal, cast
 
 import pandas as pd
 
@@ -108,7 +108,9 @@ def build_sites_vcf(
         )
         out.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n")
         for row in filtered.itertuples():
-            chrom = row.chrom_chr_helper
+            # itertuples() types columns as a broad scalar union; chrom_chr_helper
+            # is a normalized chr-prefixed string by construction.
+            chrom = cast(str, row.chrom_chr_helper)
             rsid = row.Index
             out.write(
                 f"{chrom}\t{row.pos_bp}\t{rsid}\t{row.ref}\t{row.alt}\t.\tPASS\tAADR_RS={rsid}\n"

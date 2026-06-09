@@ -6,6 +6,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Type checking is now enforced in CI: `mypy pileup_aadr` passes clean (0 errors,
+  previously 31 informational) and the lint job fails on regressions. Fixes were
+  real (not blanket ignores) — `ToolSpec` error-class fields typed as
+  `type[PileupAadrError]`, `IO[Any]`, `AlignmentHeader.to_dict().get(...)` for the
+  pysam header reads, `cast`s for pandas `itertuples()` unions, positional-only
+  Click `ctx`. Added `types-psutil` to the dev extras.
+
 ## [0.5.0] — 2026-06-09
 
 ### Added

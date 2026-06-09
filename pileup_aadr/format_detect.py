@@ -145,12 +145,12 @@ def detect_bam_build(
             the BAM is hg19/hg38-compatible despite differing chr1 length.
     """
     if override != "auto":
-        return override  # type: ignore[return-value]
+        return override
 
     # v2.2 M13 fix: "r" auto-detects BAM vs CRAM; "rb" was BAM-only and crashed on CRAM.
     # Header reads don't need reference_filename even for CRAM (header is in the file).
     with pysam.AlignmentFile(str(bam_path), "r", check_sq=False) as bam:
-        sq_records = bam.header.get("SQ", [])
+        sq_records = bam.header.to_dict().get("SQ", [])
         sn_to_ln = {sq["SN"]: int(sq["LN"]) for sq in sq_records}
 
     # Try anchors in order — chr1 first, chr20 fallback for chrY-only BAMs etc.
@@ -248,7 +248,7 @@ def _extract_rg_sms(bam_path: Path) -> set[str]:
     Uses "r" auto-detect mode (M13 fix) to support BAM + CRAM uniformly.
     """
     with pysam.AlignmentFile(str(bam_path), "r", check_sq=False) as bam:
-        rgs = bam.header.get("RG", [])
+        rgs = bam.header.to_dict().get("RG", [])
     return {rg["SM"] for rg in rgs if "SM" in rg}
 
 
@@ -431,7 +431,7 @@ def detect_aadr_build(
             or there are no chr1 rows.
     """
     if override != "auto":
-        return override  # type: ignore[return-value]
+        return override
 
     # Per-anchor lookup: try chr1 (numeric "1" in AADR encoding), fall back to
     # chr20 ("20") for the chrY-only / chr-only AADR slice case. AADR positions

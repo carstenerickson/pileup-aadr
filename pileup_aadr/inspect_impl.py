@@ -74,6 +74,7 @@ def run_inspect(*, aadr_snp: Path, json_output: bool) -> int:
     else:
         panel_guess = "unknown"
 
+    build: str  # widened from the detect_aadr_build Literal to allow "unknown"
     try:
         build = detect_aadr_build(df, override="auto")
     except PileupAadrError:

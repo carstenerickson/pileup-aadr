@@ -91,7 +91,7 @@ def _extract_ref_from_bam_pg(bam: Path) -> Path:
     """
     fasta_re = re.compile(r"(/[^\s]+\.(?:fa|fasta))")
     with pysam.AlignmentFile(str(bam), "r", check_sq=False) as bf:
-        pgs = bf.header.get("PG", [])
+        pgs = bf.header.to_dict().get("PG", [])
 
     candidates: list[str] = []
     for pg in pgs:

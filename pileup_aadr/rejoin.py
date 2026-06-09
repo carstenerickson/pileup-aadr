@@ -18,7 +18,7 @@ import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, cast
 
 import pandas as pd
 import pysam
@@ -103,14 +103,19 @@ def build_merged_lookup(
     """
     lookup: AadrLookup = {}
     for row in aadr_df.itertuples():
-        rsid = row.Index
-        lookup[rsid] = (
-            row.chrom_int,
-            row.gen_morgans,
-            row.pos_bp,
-            row.ref,
-            row.alt,
-            swap_lookup.get(rsid, False),
+        # itertuples() types Index/columns as a broad scalar union; the AADR .snp
+        # schema fixes the real runtime types, so cast to the declared shapes.
+        rsid = cast(str, row.Index)
+        lookup[rsid] = cast(
+            AadrLookupValue,
+            (
+                row.chrom_int,
+                row.gen_morgans,
+                row.pos_bp,
+                row.ref,
+                row.alt,
+                swap_lookup.get(rsid, False),
+            ),
         )
     return lookup
 

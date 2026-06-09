@@ -59,10 +59,8 @@ jobs:
       - name: Ruff check
         run: ruff check .
 
-      # mypy is informational for now — pre-existing pandas-stubs gaps surface
-      # as errors that aren't blocking. Re-enable strict-fail once stubs land.
-      - name: mypy (informational)
-        run: mypy pileup_aadr || true
+      - name: mypy
+        run: mypy pileup_aadr
 
   bio-tools:
     name: bio-tools integration (Picard + samtools + pileupCaller + mosdepth)
