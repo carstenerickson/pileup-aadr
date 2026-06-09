@@ -13,7 +13,11 @@ import pytest
 from click.testing import CliRunner
 
 from pileup_aadr.cli import cli
-from pileup_aadr.types import ExtractCliArgs
+from pileup_aadr.types import (
+    CALLING_MODES,
+    ExtractCliArgs,
+    mode_is_pseudohaploid,
+)
 
 
 def _make_inputs(tmp_path: Path) -> tuple[Path, Path]:
@@ -90,6 +94,89 @@ def test_enable_baq_flag_set_enables_baq_in_mpileup(
         f"--enable-baq must produce no_baq=True (BAQ enabled in mpileup) — "
         f"got no_baq={captured['args'].no_baq}"
     )
+
+
+# --- calling mode: single source of truth ---
+
+
+def test_calling_mode_choices_derive_from_calling_modes() -> None:
+    """The --calling-mode click.Choice is derived from CALLING_MODES, not a second
+    hardcoded list — so the two can't drift when a mode is added/renamed."""
+    extract_cmd = cli.commands["extract"]
+    opt = next(p for p in extract_cmd.params if p.name == "calling_mode")
+    assert tuple(opt.type.choices) == CALLING_MODES
+    assert opt.default == "randomHaploid"
+
+
+def test_mode_is_pseudohaploid_classification() -> None:
+    """randomHaploid/majorityCall are pseudo-haploid; randomDiploid is not.
+    Allowlist semantics: every known mode is classified explicitly."""
+    assert mode_is_pseudohaploid("randomHaploid") is True
+    assert mode_is_pseudohaploid("majorityCall") is True
+    assert mode_is_pseudohaploid("randomDiploid") is False
+    # Guard: every selectable mode has a defined classification.
+    for mode in CALLING_MODES:
+        assert isinstance(mode_is_pseudohaploid(mode), bool)
+
+
+# --- calling mode option ---
+
+
+def test_calling_mode_defaults_to_random_haploid(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """No --calling-mode → randomHaploid (matches the pseudo-haploid AADR panel)."""
+    bam, aadr = _make_inputs(tmp_path)
+    captured = _captured_args(monkeypatch)
+    result = CliRunner().invoke(
+        cli, ["extract", str(bam), str(aadr), "-o", str(tmp_path / "out")],
+    )
+    assert result.exit_code == 0, f"CLI failed: {result.output}"
+    assert captured["args"].calling_mode == "randomHaploid"
+    assert "WARNING" not in result.output
+
+
+@pytest.mark.parametrize("mode", ["randomHaploid", "randomDiploid", "majorityCall"])
+def test_calling_mode_forwarded_to_orchestrator(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str,
+) -> None:
+    """--calling-mode <mode> reaches the orchestrator verbatim."""
+    bam, aadr = _make_inputs(tmp_path)
+    captured = _captured_args(monkeypatch)
+    result = CliRunner().invoke(
+        cli,
+        ["extract", str(bam), str(aadr), "-o", str(tmp_path / "out"),
+         "--calling-mode", mode],
+    )
+    assert result.exit_code == 0, f"CLI failed: {result.output}"
+    assert captured["args"].calling_mode == mode
+
+
+def test_calling_mode_random_diploid_warns(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Selecting the diploid escape hatch prints a stderr warning about the mismatch."""
+    bam, aadr = _make_inputs(tmp_path)
+    _captured_args(monkeypatch)
+    result = CliRunner().invoke(
+        cli,
+        ["extract", str(bam), str(aadr), "-o", str(tmp_path / "out"),
+         "--calling-mode", "randomDiploid"],
+    )
+    assert result.exit_code == 0, f"CLI failed: {result.output}"
+    assert "WARNING" in result.output
+    assert "pseudohaploid=0" in result.output
+
+
+def test_calling_mode_rejects_unknown_value(tmp_path: Path) -> None:
+    """An unsupported mode is rejected by click (exit 2) — not silently passed on."""
+    bam, aadr = _make_inputs(tmp_path)
+    result = CliRunner().invoke(
+        cli,
+        ["extract", str(bam), str(aadr), "-o", str(tmp_path / "out"),
+         "--calling-mode", "consensusDiploid"],
+    )
+    assert result.exit_code == 2
 
 
 def test_dataclass_default_matches_cli_default(

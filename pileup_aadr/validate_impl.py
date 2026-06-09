@@ -38,6 +38,7 @@ from .tool_wrapper import (
     ToolSpec,
     ToolWrapper,
 )
+from .types import CALLING_MODES
 
 log = logging.getLogger(__name__)
 
@@ -243,13 +244,18 @@ def _check_tool_flags_samtools_mpileup() -> CheckResult:
 
 
 def _check_tool_flags_pileupcaller() -> CheckResult:
-    """Verify pileupCaller accepts the flags Stage 3 uses."""
+    """Verify pileupCaller accepts the flags Stage 3 uses.
+
+    All three --calling-mode flags are probed so any selectable mode is known
+    to work against the installed pileupCaller before a run starts.
+    """
+    mode_flags = tuple(f"--{mode}" for mode in CALLING_MODES)
     return _probe_help_for_flags(
         name="pileupCaller flag probe",
         invocation=["pileupCaller", "--help"],
         required_flags=(
-            "--randomDiploid", "--seed", "--sampleNames",
-            "--samplePopName", "-e",
+            *mode_flags,
+            "--seed", "--sampleNames", "--samplePopName", "-e",
         ),
     )
 

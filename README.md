@@ -13,7 +13,7 @@ The ancient-DNA community has converged on AADR's 1240k SNP capture panel + EIGE
 1. Lift AADR `.snp` (hg19) → sites VCF in user's build (hg38) via Picard
 2. Convert sites VCF → pileupCaller `.snp` format
 3. Run `samtools mpileup` against the user's BAM at lifted sites
-4. Run `pileupCaller --randomDiploid` to call pseudohaploid genotypes
+4. Run `pileupCaller` (default `--randomHaploid`; selectable with `--calling-mode`) to call pseudohaploid genotypes
 5. Rejoin to hg19 coordinates via rsID for AdmixTools 2 compatibility
 
 The procedure is documented in scattered methodology notes; execution is error-prone (~99% liftover yield is required; lower numbers indicate chain or reference-FASTA mismatch); coverage reporting is ad-hoc. Failure modes ("only 39% of HO sites lifted cleanly" via the gVCF-lift dead-end) are tribal knowledge.
@@ -31,7 +31,7 @@ External binaries needed by `extract`:
 | Tool          | Min version | Required for                                    |
 |---------------|-------------|--------------------------------------------------|
 | `samtools`    | ≥ 1.16      | always (Stage 3 mpileup)                         |
-| `pileupCaller`| ≥ 1.6.0     | always (Stage 3 randomDiploid caller)           |
+| `pileupCaller`| ≥ 1.6.0     | always (Stage 3 genotype caller)                 |
 | `picard`      | ≥ 3.0       | only when AADR build ≠ BAM build (Stage 1 lift)  |
 | `java`        | ≥ 11        | transitive Picard requirement                    |
 | `mosdepth`    | ≥ 0.3.6     | only `coverage` subcommand                       |
@@ -81,6 +81,7 @@ Run `pileup-aadr <cmd> --help` for the full option list. Notable `extract` optio
 - **Liftover tuning**: `--chain`, `--ref-fasta`, `--picard-mem` (default 3g), `--strict-chain-sha`
 - **Filtering**: `--keep-palindromes`, `--keep-alt-contigs` (rarely useful; defaults are right)
 - **Pileup**: `--threads`, `--min-mapq`, `--min-baseq`, `--enable-baq`, `--seed`
+- **Calling mode**: `--calling-mode` (`randomHaploid` default / `randomDiploid` / `majorityCall`) — `randomHaploid` and `majorityCall` are pseudo-haploid and match the AADR panel; `randomDiploid` produces diploid calls (legacy escape hatch, recorded as `pseudohaploid=0`)
 - **Gates**: `--liftover-yield-fail-pct` (default 70), `--min-coverage` (default 500k)
 - **Reporting**: `--report-json`, `--report-tsv`
 - **Tempdir**: `--tempdir`, `--keep-tempdir`, `--clean-tempdir-on-crash`
@@ -160,8 +161,8 @@ AADR .snp (hg19)              user BAM (hg19 or hg38)
        ▼
    .snp + BED in target build
        │
-       │ Stage 3: samtools mpileup | pileupCaller --randomDiploid
-       │ (~25-40 min on a 33× WGS at 1240k)
+       │ Stage 3: samtools mpileup | pileupCaller --randomHaploid
+       │ (default mode; --calling-mode selects; ~25-40 min on a 33× WGS at 1240k)
        ▼
    pileupCaller EIGENSTRAT triplet (target build)
        │
@@ -175,7 +176,7 @@ Key invariants the implementation honors:
 
 - **Picard 3.3.0+ LiftoverVcf** with `RECOVER_SWAPPED_REF_ALT=true` + `SwappedAlleles` INFO flag for Stage 4 dosage inversion (the safe, modern path; the gVCF-lift route fails at chain-boundary straddling)
 - **Bundled UCSC chain** (~223 KB; SHA-verified at startup; reinstall the wheel if the SHA mismatches)
-- **Single-BAM `--randomDiploid` is pseudohaploid by construction** — recorded in the `<prefix>.pseudohaploid.json` sidecar for downstream tooling
+- **Pseudo-haploid by construction in the default mode** — `--randomHaploid` (one random read per site) and `--majorityCall` both yield 0% het, matching the pseudo-haploid AADR panel; the `<prefix>.pseudohaploid.json` sidecar records the chosen `--calling-mode` and sets `pseudohaploid=1`. The legacy `--randomDiploid` mode produces diploid (het-bearing) calls and is recorded as `pseudohaploid=0`.
 - **No-lift fast path** when BAM build matches AADR build (saves Picard + transform + rejoin; pileupCaller's output IS the AADR-frame triplet)
 - **Stable exit codes** (0/1/2/3/4) for workflow-manager integration
 - **Streaming Stage-4 writes** — 1.2M-site EIGENSTRAT triplet emitted at constant memory

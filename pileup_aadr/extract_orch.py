@@ -216,6 +216,7 @@ def _run_stages(
             sample_name=sample_name, pop_name=pop_name,
             shard_dir=shard_dir,
             master_seed=args.seed, threads=args.threads,
+            calling_mode=args.calling_mode,
             min_mapq=args.min_mapq, min_baseq=args.min_baseq,
             no_baq=args.no_baq,
         )
@@ -223,6 +224,7 @@ def _run_stages(
             pileupcaller_eig_prefix=td_call / "user_native",
             output_prefix=args.output_prefix,
             sample_name=sample_name, pop_name=pop_name, sex=args.sex,
+            calling_mode=args.calling_mode,
             emit_per_variant_rows=(args.report_tsv is not None),
             aadr_autosomal_count=aadr_autosomal_count,
         )
@@ -275,6 +277,7 @@ def _run_stages(
             sample_name=sample_name, pop_name=pop_name,
             shard_dir=shard_dir,
             master_seed=args.seed, threads=args.threads,
+            calling_mode=args.calling_mode,
             min_mapq=args.min_mapq, min_baseq=args.min_baseq,
             no_baq=args.no_baq,
         )
@@ -289,6 +292,7 @@ def _run_stages(
         aadr_lookup=aadr_lookup,
         output_prefix=args.output_prefix,
         sample_name=sample_name, pop_name=pop_name, sex=args.sex,
+        calling_mode=args.calling_mode,
         emit_per_variant_rows=(args.report_tsv is not None),
         aadr_autosomal_count=aadr_autosomal_count,
     )

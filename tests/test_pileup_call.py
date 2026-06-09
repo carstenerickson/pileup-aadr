@@ -350,6 +350,72 @@ def test_region_comes_after_bam_in_samtools_args(
     )
 
 
+# --- calling mode → pileupCaller flag ---
+
+
+def _capture_downstream_args(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[str]]:
+    """Patch ToolWrapper so the pileupCaller (downstream) argv is captured."""
+    captured: dict[str, list[str]] = {}
+
+    def capture_pipe(
+        self: object,
+        downstream: object,
+        *,
+        upstream_args: list[str],
+        downstream_args: list[str],
+        upstream_stderr_to: Path,
+        downstream_stderr_to: Path,
+    ) -> tuple[ToolRunResult, ToolRunResult]:
+        captured["downstream_args"] = downstream_args
+        upstream_stderr_to.parent.mkdir(parents=True, exist_ok=True)
+        upstream_stderr_to.write_text("")
+        downstream_stderr_to.write_text(
+            (FIXTURES_STDERR / "pileupcaller_clean.stderr").read_text()
+        )
+        return (
+            ToolRunResult(exit_code=0, stdout=None, stderr_path=upstream_stderr_to,
+                          stderr_text=None, wallclock_seconds=0.1, peak_rss_mb=None),
+            ToolRunResult(exit_code=0, stdout=None, stderr_path=downstream_stderr_to,
+                          stderr_text=None, wallclock_seconds=0.1, peak_rss_mb=None),
+        )
+
+    from pileup_aadr import pileup_call as pc_mod
+    monkeypatch.setattr(pc_mod.ToolWrapper, "_resolve_binary",
+                        lambda _self, spec: Path(f"/usr/bin/fake_{spec.binary}"))
+    monkeypatch.setattr(pc_mod.ToolWrapper, "_check_version", lambda _self: None)
+    monkeypatch.setattr(pc_mod.ToolWrapper, "pipe", capture_pipe)
+    return captured
+
+
+def test_default_calling_mode_is_random_haploid(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """No calling_mode → pileupCaller gets --randomHaploid (matches the AADR panel)."""
+    captured = _capture_downstream_args(monkeypatch)
+    run_pileup_call(**_common_run_args(tmp_path))
+    argv = captured["downstream_args"]
+    assert "--randomHaploid" in argv
+    assert "--randomDiploid" not in argv
+    assert "--majorityCall" not in argv
+    assert "--seed" in argv
+
+
+@pytest.mark.parametrize("mode", ["randomHaploid", "randomDiploid", "majorityCall"])
+def test_calling_mode_maps_to_pileupcaller_flag(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str,
+) -> None:
+    """calling_mode selects the matching --<mode> flag; --seed is passed for every
+    mode (majorityCall uses it to break equal-depth ties → reproducibility)."""
+    captured = _capture_downstream_args(monkeypatch)
+    run_pileup_call(**_common_run_args(tmp_path), calling_mode=mode)
+    argv = captured["downstream_args"]
+    assert f"--{mode}" in argv
+    other_modes = {"randomHaploid", "randomDiploid", "majorityCall"} - {mode}
+    for other in other_modes:
+        assert f"--{other}" not in argv
+    assert "--seed" in argv
+
+
 # --- run_pileup_call_shards ---
 
 

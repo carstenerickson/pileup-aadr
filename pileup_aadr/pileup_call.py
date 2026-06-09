@@ -1,4 +1,8 @@
-"""Stage 3: pipe samtools mpileup output into pileupCaller --randomDiploid.
+"""Stage 3: pipe samtools mpileup output into pileupCaller.
+
+The genotype-calling mode is selectable (`calling_mode`, default `randomHaploid`):
+randomHaploid/majorityCall are pseudo-haploid and match the AADR panel;
+randomDiploid is the legacy diploid escape hatch. See `run_pileup_call`.
 
 Longest wallclock stage (~30-40 min on a 33x WGS at 1240k). Two subprocesses
 connected by an OS pipe via `ToolWrapper.pipe`. SIGPIPE handling: if the
@@ -22,6 +26,7 @@ from .counters import PileupCallerSummary, Stage3CallCounters, Stage3ShardCounte
 from .errors import PileupAadrInternalError, ToolSubprocessError
 from .shard import ShardSpec, build_shard_manifest, merge_shard_eigenstrat
 from .tool_wrapper import PILEUPCALLER_SPEC, SAMTOOLS_SPEC, ToolWrapper
+from .types import CallingMode
 
 log = logging.getLogger(__name__)
 
@@ -58,13 +63,14 @@ def run_pileup_call(
     sample_name: str,
     pop_name: str,
     *,
+    calling_mode: CallingMode = "randomHaploid",
     seed: int = 42,
     min_mapq: int = 30,
     min_baseq: int = 30,
     no_baq: bool = False,
     region: str | None = None,
 ) -> Stage3CallCounters:
-    """Pipe `samtools mpileup` output into `pileupCaller --randomDiploid`.
+    """Pipe `samtools mpileup` output into `pileupCaller`.
 
     Args:
         bam_path: aligned BAM/CRAM (BAM index .bai/.crai must exist alongside).
@@ -74,6 +80,10 @@ def run_pileup_call(
         output_prefix: pileupCaller writes `<prefix>.{geno,snp,ind}` here.
         sample_name: --sampleNames value; becomes IID in output .ind.
         pop_name: --samplePopName value; becomes POP in output .ind.
+        calling_mode: pileupCaller genotype-calling mode (default randomHaploid).
+            randomHaploid/majorityCall are pseudo-haploid (0% het, match the
+            AADR panel); randomDiploid samples two reads → a diploid het-bearing
+            call (legacy escape hatch).
         seed: pileupCaller --seed (default 42 for reproducibility).
         min_mapq: mpileup -q (default 30).
         min_baseq: mpileup -Q (default 30).
@@ -105,19 +115,24 @@ def run_pileup_call(
     if region is not None:
         samtools_args.append(region)
 
+    # Mode → pileupCaller flag. The default randomHaploid (one random read → a
+    # haploid call) pseudo-haploidizes the target to MATCH the AADR 1240K panel,
+    # which is itself pseudo-haploid (one random read per site). majorityCall
+    # (consensus allele) is likewise pseudo-haploid (0% het). randomDiploid
+    # samples 2 reads → a diploid call (~13% het on modern WGS); it does NOT
+    # match the panel and creates a diploid-vs-pseudo-haploid data-type mismatch
+    # in the downstream f-statistics (reference bias + artificial-drift
+    # heterogeneity; Lazaridis 2017, Souilmi 2022). A track_e phase4 experiment
+    # on a 33x modern WGS target confirmed randomDiploid → 13% het vs
+    # randomHaploid → 0% het, with qpAdm weights invariant across modes — hence
+    # randomHaploid is the default and randomDiploid is a labelled escape hatch
+    # (the .pseudohaploid sidecar records pseudohaploid=0 for it).
+    # --seed is passed for every mode: randomHaploid/randomDiploid use it for
+    # read sampling, and majorityCall uses it to break equal-allele-depth ties
+    # at random — so omitting it would make majorityCall non-reproducible
+    # (pileupCaller falls back to the system clock when --seed is absent).
     pileupcaller_args = [
-        # --randomHaploid (one random read → a haploid call) is the correct mode
-        # for pileup-aadr: it pseudo-haploidizes the target to MATCH the AADR
-        # 1240K panel, which is itself pseudo-haploid (one random read per site).
-        # The prior --randomDiploid (samples 2 reads → a diploid call, ~13% het on
-        # a modern WGS sample) was a bug: the .pseudohaploid sidecar labelled that
-        # diploid output "pseudohaploid by construction", mislabeling het-bearing
-        # diploid data as pseudo-haploid and creating a diploid-vs-pseudo-haploid
-        # data-type mismatch in the downstream f-statistics (reference bias +
-        # artificial-drift heterogeneity; Lazaridis 2017, Souilmi 2022). A track_e
-        # phase4 experiment on a 33x modern WGS target confirmed randomDiploid → 13%
-        # het vs randomHaploid → 0% het, with qpAdm weights invariant across modes.
-        "--randomHaploid",
+        f"--{calling_mode}",
         "--seed", str(seed),
         "-f", str(snp_path),
         "--sampleNames", sample_name,
@@ -195,6 +210,7 @@ def run_pileup_call_shards(
     shard_dir: Path,
     master_seed: int,
     *,
+    calling_mode: CallingMode = "randomHaploid",
     threads: int = 1,
     min_mapq: int = 30,
     min_baseq: int = 30,
@@ -220,6 +236,8 @@ def run_pileup_call_shards(
         shard_dir: directory for per-chromosome shard working files.
         master_seed: pileupCaller master seed; per-shard seeds derived via
             master_seed * 1009 + shard_index.
+        calling_mode: pileupCaller genotype-calling mode (default randomHaploid);
+            forwarded unchanged to every per-shard run_pileup_call.
         threads: parallelism width (1 = no fan-out; default 1).
         min_mapq: mpileup -q.
         min_baseq: mpileup -Q.
@@ -242,6 +260,7 @@ def run_pileup_call_shards(
             output_prefix=output_prefix,
             sample_name=sample_name,
             pop_name=pop_name,
+            calling_mode=calling_mode,
             seed=master_seed,
             min_mapq=min_mapq,
             min_baseq=min_baseq,
@@ -281,6 +300,7 @@ def run_pileup_call_shards(
             output_prefix=spec.output_prefix,
             sample_name=sample_name,
             pop_name=pop_name,
+            calling_mode=calling_mode,
             seed=spec.seed,
             min_mapq=min_mapq,
             min_baseq=min_baseq,

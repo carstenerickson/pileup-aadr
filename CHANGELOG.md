@@ -6,6 +6,29 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`--calling-mode` CLI option** (`randomHaploid` default / `randomDiploid` /
+  `majorityCall`). Stage 3's genotype-calling mode is now user-selectable instead
+  of hardcoded. `randomHaploid` (the default) and `majorityCall` are pseudo-haploid
+  (0% het) and match the pseudo-haploid AADR 1240K panel — the correct choice when
+  projecting a modern WGS target onto ancient DNA. `randomDiploid` is retained as a
+  legacy escape hatch for callers who specifically want diploid genotypes.
+
+### Changed
+
+- **The `.pseudohaploid.json` sidecar is now mode-honest.** `calling_mode` records
+  the actual `--calling-mode` used, and `pseudohaploid` is `1` for the pseudo-haploid
+  modes but `0` for `randomDiploid` (which produces diploid het-bearing calls) — so the
+  downstream f2 consumer (`pgen-samplebind`) never mistakes diploid data for
+  pseudo-haploid. Selecting `--calling-mode randomDiploid` also emits a stderr warning.
+- `--seed` is forwarded for every mode: the random modes use it for read sampling, and `majorityCall` uses it to break equal-allele-depth ties (so the run stays reproducible).
+- `validate` now probes the installed `pileupCaller` for all three mode flags.
+- Modes are defined once on the `CallingMode` type (`CALLING_MODES`,
+  `PSEUDOHAPLOID_MODES`, `mode_is_pseudohaploid`): the CLI choices and the
+  `validate` probe derive from it, and the pseudo-haploid check is an allowlist
+  (a future mode is treated as diploid until explicitly added — fails closed).
+
 ## [0.5.0] — 2026-06-09
 
 ### Fixed

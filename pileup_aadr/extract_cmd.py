@@ -12,7 +12,7 @@ from typing import Any
 import click
 
 from .extract_orch import run_extract
-from .types import ExtractCliArgs
+from .types import CALLING_MODES, ExtractCliArgs, mode_is_pseudohaploid
 
 
 @click.command()
@@ -143,10 +143,25 @@ from .types import ExtractCliArgs
     ),
 )
 @click.option(
+    "--calling-mode",
+    type=click.Choice(CALLING_MODES),
+    default="randomHaploid",
+    help=(
+        "pileupCaller genotype-calling mode (default: randomHaploid). "
+        "randomHaploid and majorityCall are pseudo-haploid (0%% het) and MATCH "
+        "the pseudo-haploid AADR 1240K panel — the correct choice for projecting "
+        "a modern WGS target onto ancient DNA. randomDiploid samples two reads "
+        "(~13%% het on modern WGS) and does NOT match the panel; it is a legacy "
+        "escape hatch, and the .pseudohaploid.json sidecar records pseudohaploid=0 "
+        "when it is selected."
+    ),
+)
+@click.option(
     "--seed",
     type=int,
     default=42,
-    help="pileupCaller --randomHaploid seed (default: 42)",
+    help="pileupCaller RNG --seed (default: 42; used by all modes — read "
+    "sampling for random*, tie-breaking for majorityCall)",
 )
 @click.option(
     "--liftover-yield-fail-pct",
@@ -210,7 +225,7 @@ def extract(ctx: click.Context, **kwargs: Any) -> None:
     The 4-stage pipeline:
       1. Lift AADR sites hg19 -> hg38 via Picard LiftoverVcf RECOVER_SWAPPED_REF_ALT
       2. Transform lifted VCF -> pileupCaller .snp + BED (with alt-contig filter)
-      3. samtools mpileup | pileupCaller --randomHaploid (pseudo-haploid, matches AADR panel)
+      3. samtools mpileup | pileupCaller (--calling-mode; default --randomHaploid, matches AADR panel)
       4. Rejoin hg19 coordinates by rsID + invert dosage at SwappedAlleles
 
     For hg19-native BAMs, Stages 1/2/4 are skipped (no-lift fast path).
@@ -226,5 +241,15 @@ def extract(ctx: click.Context, **kwargs: Any) -> None:
     enable_baq = kwargs.pop("enable_baq", False)
     kwargs["no_baq"] = enable_baq
     args = ExtractCliArgs(**kwargs)
+    if not mode_is_pseudohaploid(args.calling_mode):
+        click.echo(
+            f"WARNING: --calling-mode {args.calling_mode} produces DIPLOID (het-"
+            "bearing) genotypes (~13% het on modern WGS). The AADR 1240K panel is "
+            "pseudo-haploid, so this output is a data-type mismatch for ancient-DNA "
+            "f-statistics. The .pseudohaploid.json sidecar will record "
+            "pseudohaploid=0. Use --calling-mode randomHaploid (default) unless "
+            "you specifically need diploid calls.",
+            err=True,
+        )
     exit_code = run_extract(args)
     ctx.exit(exit_code)
