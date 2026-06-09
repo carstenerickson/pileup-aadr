@@ -429,10 +429,11 @@ def _build_sidecar(
 ) -> dict[str, Any]:
     """Build the PSEUDOHAPLOID sidecar dict (consumed by pgen-samplebind)."""
     note = (
-        "no-lift fast path (AADR build == BAM build); single-BAM --randomDiploid "
-        "output is pseudohaploid by construction"
+        "no-lift fast path (AADR build == BAM build); --randomHaploid output is "
+        "pseudohaploid by construction (one random read per site → 0% het)"
         if no_lift
-        else "single-BAM --randomDiploid output is pseudohaploid by construction"
+        else "--randomHaploid output is pseudohaploid by construction "
+        "(one random read per site → 0% het)"
     )
     return {
         "schema_version": 1,
@@ -445,7 +446,7 @@ def _build_sidecar(
                     het_count / non_missing_autosomal if non_missing_autosomal else 0.0
                 ),
                 "source": "pileup-aadr-extract",
-                "calling_mode": "randomDiploid",
+                "calling_mode": "randomHaploid",
                 "note": note,
             },
         },

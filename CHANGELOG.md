@@ -6,6 +6,24 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-06-09
+
+### Fixed
+
+- **Stage 3 now calls `pileupCaller --randomHaploid`, not `--randomDiploid`.** This is
+  a correctness fix. pileup-aadr produces pseudo-haploid genotypes at AADR 1240K sites
+  to co-analyze a target with the AADR panel, which is itself pseudo-haploid (one random
+  read per site). `--randomDiploid` samples **two** reads → a **diploid** call (~13% het
+  on a modern WGS target), yet the `.pseudohaploid.json` sidecar labelled that output
+  `"pseudohaploid": 1` "by construction" — mislabeling het-bearing diploid data as
+  pseudo-haploid and creating a diploid-vs-pseudo-haploid data-type mismatch with the
+  panel in downstream f-statistics (reference-bias + artificial-drift heterogeneity;
+  Lazaridis et al. 2017, Souilmi et al. 2022). `--randomHaploid` (one random read → a
+  haploid call, 0% het) is the correct, panel-matching mode. The provenance sidecar
+  (`calling_mode`, `note`) and Stage-3 status line are updated accordingly. Verified on a
+  33× modern WGS target (track_e phase4): randomDiploid → 13% het vs randomHaploid → 0%
+  het, with qpAdm admixture weights invariant across calling modes.
+
 ## [0.4.0] — 2026-05-14
 
 Picard chromosome sharding for Stage 1 parallelism, AADR `.snp` parse cache,

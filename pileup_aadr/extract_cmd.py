@@ -146,7 +146,7 @@ from .types import ExtractCliArgs
     "--seed",
     type=int,
     default=42,
-    help="pileupCaller --randomDiploid seed (default: 42)",
+    help="pileupCaller --randomHaploid seed (default: 42)",
 )
 @click.option(
     "--liftover-yield-fail-pct",
@@ -210,7 +210,7 @@ def extract(ctx: click.Context, **kwargs: Any) -> None:
     The 4-stage pipeline:
       1. Lift AADR sites hg19 -> hg38 via Picard LiftoverVcf RECOVER_SWAPPED_REF_ALT
       2. Transform lifted VCF -> pileupCaller .snp + BED (with alt-contig filter)
-      3. samtools mpileup | pileupCaller --randomDiploid
+      3. samtools mpileup | pileupCaller --randomHaploid (pseudo-haploid, matches AADR panel)
       4. Rejoin hg19 coordinates by rsID + invert dosage at SwappedAlleles
 
     For hg19-native BAMs, Stages 1/2/4 are skipped (no-lift fast path).

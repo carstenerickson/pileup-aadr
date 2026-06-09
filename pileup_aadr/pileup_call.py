@@ -106,7 +106,18 @@ def run_pileup_call(
         samtools_args.append(region)
 
     pileupcaller_args = [
-        "--randomDiploid",
+        # --randomHaploid (one random read → a haploid call) is the correct mode
+        # for pileup-aadr: it pseudo-haploidizes the target to MATCH the AADR
+        # 1240K panel, which is itself pseudo-haploid (one random read per site).
+        # The prior --randomDiploid (samples 2 reads → a diploid call, ~13% het on
+        # a modern WGS sample) was a bug: the .pseudohaploid sidecar labelled that
+        # diploid output "pseudohaploid by construction", mislabeling het-bearing
+        # diploid data as pseudo-haploid and creating a diploid-vs-pseudo-haploid
+        # data-type mismatch in the downstream f-statistics (reference bias +
+        # artificial-drift heterogeneity; Lazaridis 2017, Souilmi 2022). A track_e
+        # phase4 experiment on a 33x modern WGS target confirmed randomDiploid → 13%
+        # het vs randomHaploid → 0% het, with qpAdm weights invariant across modes.
+        "--randomHaploid",
         "--seed", str(seed),
         "-f", str(snp_path),
         "--sampleNames", sample_name,

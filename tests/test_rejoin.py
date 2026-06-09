@@ -395,7 +395,7 @@ def test_sidecar_pseudohaploid_classification(tmp_path: Path) -> None:
     assert sample["het_count"] == 1
     assert sample["non_missing_autosomal_count"] == 2
     assert sample["het_rate"] == 0.5
-    assert sample["calling_mode"] == "randomDiploid"
+    assert sample["calling_mode"] == "randomHaploid"
     assert "no-lift" not in sample["note"]
 
 
