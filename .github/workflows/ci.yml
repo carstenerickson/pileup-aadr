@@ -22,10 +22,10 @@ jobs:
         python-version: ["3.11", "3.12", "3.13"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -43,10 +43,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python 3.13
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
           cache: pip
@@ -73,10 +73,10 @@ jobs:
       run:
         shell: bash -el {0}  # `-l` so conda env activation persists across steps
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up miniconda + bioconda channel
-        uses: conda-incubator/setup-miniconda@v3
+        uses: conda-incubator/setup-miniconda@v4
         with:
           auto-update-conda: true
           python-version: "3.12"
@@ -104,7 +104,7 @@ jobs:
           echo "PICARD_JAR=$PICARD_JAR" >> "$GITHUB_ENV"
 
       - name: Cache hg38 chr22 fixture
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: tests/integration/fixtures/chr22.fa*
           key: hg38-chr22-fasta-v1
